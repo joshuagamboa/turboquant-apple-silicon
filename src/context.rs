@@ -16,8 +16,6 @@ pub enum TurboQuantError {
     InvalidUtf8(#[from] std::ffi::NulError),
     #[error("API version mismatch: expected {expected}, got {actual}")]
     ApiVersionMismatch { expected: i32, actual: i32 },
-    #[error("Evaluation not implemented - implement inference loop in llamatq_eval")]
-    EvalNotImplemented,
     #[error("Context is not thread-safe - do not send across threads")]
     NotThreadSafe,
 }
@@ -87,8 +85,6 @@ impl TurboQuantCtx {
         
         if result < 0 {
             Err(TurboQuantError::EvalFailed(result))
-        } else if result == 0 {
-            Err(TurboQuantError::EvalNotImplemented)
         } else {
             Ok(result)
         }

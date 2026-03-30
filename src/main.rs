@@ -13,7 +13,6 @@ fn main() {
         eprintln!("Usage: {} <model.gguf> [prompt]", args[0]);
         eprintln!();
         eprintln!("⚠️ THREADING: Context must stay on single OS thread");
-        eprintln!("⚠️ EVAL: Skeleton implementation - implement inference loop");
         std::process::exit(1);
     }
     
@@ -46,14 +45,9 @@ fn main() {
     println!("API Version: {}", unsafe { ffi::llamatq_get_api_version() });
     
     match ctx.eval(prompt, 256) {
-        Ok(tokens) => println!("Generated {} tokens", tokens),
-        Err(TurboQuantError::EvalNotImplemented) => {
-            eprintln!();
-            eprintln!("⚠️ EVALUATION NOT IMPLEMENTED");
-            eprintln!("   Implement inference loop in src/shim/llamatqshim.c");
-            eprintln!("   Reference: llama.cpp/examples/main/main.cpp");
-            std::process::exit(0);
-        }
+        Ok(tokens) => {
+            println!("\nGenerated {} tokens", tokens);
+        },
         Err(e) => {
             eprintln!("Evaluation failed: {}", e);
             std::process::exit(1);

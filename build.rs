@@ -37,9 +37,23 @@ fn main() {
         
         // FIX #5: Explicitly set Release build type (Debug is 10x slower for Metal)
         cmake.define("CMAKE_BUILD_TYPE", "Release");
+        cmake.define("BUILD_SHARED_LIBS", "OFF");
         cmake.profile("Release");
         
         let dst = cmake.build();
+        let lib_dir = find_lib_dir(&dst);
+        
+        // FIX #6: Ensure no dynamic libraries are present in the search path to prevent dyld errors
+        if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(ext) = path.extension() {
+                    if ext == "dylib" {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+        }
         
         // Link frameworks (MetalKit is optional for compute-only)
         println!("cargo:rustc-link-lib=framework=Metal");
@@ -47,16 +61,17 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
         
         // Find library directory (handles lib/ or lib64/)
-        let lib_dir = find_lib_dir(&dst);
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
         
         // FIX #1: Link all required libraries (fork may split GGML outputs)
-        // Update this list if the fork renames or splits libraries
         println!("cargo:rustc-link-lib=static=llama");
         println!("cargo:rustc-link-lib=static=ggml");
         println!("cargo:rustc-link-lib=static=ggml-metal");    // Required for Metal kernels
         println!("cargo:rustc-link-lib=static=ggml-base");     // CPU fallback ops
         println!("cargo:rustc-link-lib=static=ggml-blas");     // If Accelerate enabled
+        println!("cargo:rustc-link-lib=static=ggml-cpu");      // Core CPU ops
+        // FIX #7: Link C++ standard library (required for static llama.cpp)
+        println!("cargo:rustc-link-lib=c++");
         
         // FIX #2: Build the shim explicitly using cc crate
         build_shim(&llama_path);
@@ -94,6 +109,7 @@ fn build_shim(llama_path: &str) {
     cc::Build::new()
         .file("src/shim/llamatqshim.c")
         .include(format!("{}/include", llama_path))
+        .include(format!("{}/ggml/include", llama_path))
         .include("include")
         // FIX #1: Pass API version via compiler flag (not header macro)
         .define("LLAMA_TURBOQUANT_API_VERSION", "1")
