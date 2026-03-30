@@ -1,0 +1,21 @@
+[package]
+name = "turboquant-llama-rs"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+description = "TurboQuant KV cache quantization for llama.cpp on Apple Silicon"
+
+[dependencies]
+libc = "0.2"
+thiserror = "1.0"
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1.0"  # For compiling the shim explicitly
+
+# NOTE: bindgen removed - we use hand-written FFI for clarity and control
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

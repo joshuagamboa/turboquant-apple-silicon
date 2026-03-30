@@ -1,0 +1,38 @@
+# Project brief (internal reference only)
+project_brief.md
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Build artifacts
+/build/
+*.o
+*.a
+*.dylib
+*.so
+*.d
+
+# Model files (large binaries)
+models/*.gguf
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# llama-cpp-turboquant fork (cloned separately)
+/llama-cpp-turboquant/
