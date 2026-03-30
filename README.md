@@ -2,7 +2,9 @@
 
 **TurboQuant KV Cache Quantization for llama.cpp on Apple Silicon (Metal/ARM)**
 
-A production-grade Rust integration template that wraps the [TurboQuant fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp, enabling aggressive KV cache compression with minimal quality loss — optimised for Apple Silicon GPUs via Metal compute shaders.
+✅ **STATUS: FULLY FUNCTIONAL** — Core inference loop implemented with Metal GPU acceleration and static linking stability.
+
+A production-grade Rust integration template that wraps the [TurboQuant fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp, enabling aggressive KV cache compression with minimal quality loss — optimized for Apple Silicon GPUs via Metal compute shaders.
 
 ---
 
@@ -63,7 +65,7 @@ turboquant-apple-silicon/
 ```bash
 git clone https://github.com/TheTom/llama-cpp-turboquant
 cd llama-cpp-turboquant
-git checkout a1b2c3d   # Pinned commit
+git checkout 9c600bcd4   # Pinned stable commit
 cd ..
 ```
 

@@ -1,0 +1,9 @@
+- [x] Setup Local Submodule
+  - [x] Clone `llama-cpp-turboquant`
+  - [x] Checkout commit `9c600bcd4`
+- [x] Implement Inference Loop
+  - [x] Modify `src/shim/llamatqshim.c` (Tokenization, eval, sampling loop)
+  - [x] Modify `src/main.rs` (ensure stdout flush)
+- [x] Verify Implementation
+  - [x] Run `scripts/ci-smoke-test.sh`
+  - [x] Manual test and checks
