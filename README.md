@@ -60,19 +60,22 @@ turboquant-apple-silicon/
 
 ## Quick Start
 
-### 1. Clone the TurboQuant fork
+### 1. Clone the TurboQuant fork (into the project root)
 
 ```bash
+cd turboquant-apple-silicon
 git clone https://github.com/TheTom/llama-cpp-turboquant
 cd llama-cpp-turboquant
 git checkout 9c600bcd4   # Pinned stable commit
 cd ..
 ```
 
+> [!NOTE]
+> The fork is gitignored. If you keep it elsewhere, set `LLAMA_TURBOQUANT_PATH` to its location.
+
 ### 2. Build
 
 ```bash
-export LLAMA_TURBOQUANT_PATH="$(pwd)/llama-cpp-turboquant"
 cargo build --release
 ```
 

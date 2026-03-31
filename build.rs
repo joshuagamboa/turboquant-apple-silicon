@@ -8,15 +8,22 @@ fn main() {
     // Only configure for Apple Silicon (graceful fallback otherwise)
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         
-        // Get llama-cpp-turboquant path from env or default
-        let llama_path = env::var("LLAMA_TURBOQUANT_PATH")
-            .unwrap_or_else(|_| "../llama-cpp-turboquant".to_string());
+        // Get llama-cpp-turboquant path from env or default (in-tree)
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        let llama_path = env::var("LLAMA_TURBOQUANT_PATH").unwrap_or_else(|_| {
+            Path::new(&manifest_dir)
+                .join("llama-cpp-turboquant")
+                .to_string_lossy()
+                .to_string()
+        });
         
         // Verify path exists
         if !Path::new(&llama_path).exists() {
             panic!(
                 "llama-cpp-turboquant not found at '{}'. \
-                Set LLAMA_TURBOQUANT_PATH env var or clone the fork.",
+                Clone the fork into the project root:\n  \
+                git clone https://github.com/TheTom/llama-cpp-turboquant\n\
+                Or set LLAMA_TURBOQUANT_PATH env var to an external checkout.",
                 llama_path
             );
         }
