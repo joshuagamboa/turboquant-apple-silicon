@@ -36,3 +36,6 @@ Makefile
 
 # llama-cpp-turboquant fork (cloned separately)
 /llama-cpp-turboquant/
+
+# Log files
+*.log
