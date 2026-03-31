@@ -1,8 +1,36 @@
 // src/context.rs
-use crate::ffi::{self, LlamaTqCtx, LlamaTqParams, LlamaTqCacheType, NotSendSync};
+use crate::ffi::{
+    self, LlamaTqCacheType, LlamaTqCtx, LlamaTqParams, LlamaTqSamplingParams, NotSendSync,
+};
 use std::ffi::CString;
 use std::marker::PhantomData;
 use thiserror::Error;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SamplingParams {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub seed: u32,
+}
+impl Default for SamplingParams {
+    fn default() -> Self {
+        Self {
+            temperature: 0.0,
+            top_p: 1.0,
+            seed: 0,
+        }
+    }
+}
+
+impl From<SamplingParams> for LlamaTqSamplingParams {
+    fn from(params: SamplingParams) -> Self {
+        Self {
+            temperature: params.temperature,
+            top_p: params.top_p,
+            seed: params.seed,
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum TurboQuantError {
@@ -78,16 +106,41 @@ impl TurboQuantCtx {
         unsafe { ffi::llamatq_get_kv_cache_size(self.raw) }
     }
     
+    /// Evaluate the prompt using specific sampling parameters
     /// ⚠️ Must be called from the same thread that created the context
-    pub fn eval(&self, prompt: &str, max_tokens: i32) -> Result<i32, TurboQuantError> {
+    pub fn eval_with_sampling(
+        &self,
+        prompt: &str,
+        max_tokens: i32,
+        params: SamplingParams,
+    ) -> Result<i32, TurboQuantError> {
         let prompt_c = CString::new(prompt)?;
-        let result = unsafe { ffi::llamatq_eval(self.raw, prompt_c.as_ptr(), max_tokens) };
-        
+        let c_params: LlamaTqSamplingParams = params.into();
+
+        let result = unsafe {
+            ffi::llamatq_eval_with_sampling(
+                self.raw,
+                prompt_c.as_ptr(),
+                max_tokens,
+                &c_params,
+            )
+        };
+
         if result < 0 {
             Err(TurboQuantError::EvalFailed(result))
         } else {
             Ok(result)
         }
+    }
+
+    /// Evaluate the prompt using default (greedy) sampling
+    /// ⚠️ Must be called from the same thread that created the context
+    pub fn eval(&self, prompt: &str, max_tokens: i32) -> Result<i32, TurboQuantError> {
+        self.eval_with_sampling(prompt, max_tokens, SamplingParams::default())
+    }
+
+    pub fn print_memory_breakdown(&self) {
+        unsafe { ffi::llamatq_print_memory_breakdown(self.raw) }
     }
     
     pub fn verify_metal(&self) -> Result<(), TurboQuantError> {

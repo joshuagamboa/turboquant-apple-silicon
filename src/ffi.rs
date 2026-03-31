@@ -28,12 +28,27 @@ pub struct LlamaTqParams {
     pub n_batch: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LlamaTqSamplingParams {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub seed: u32,
+}
+
 #[link(name = "llamatqshim")]
 extern "C" {
     pub fn llamatq_create(params: *const LlamaTqParams) -> LlamaTqCtx;
     pub fn llamatq_eval(ctx: LlamaTqCtx, prompt: *const c_char, max_tokens: c_int) -> c_int;
+    pub fn llamatq_eval_with_sampling(
+        ctx: LlamaTqCtx,
+        prompt: *const c_char,
+        max_tokens: c_int,
+        sparams: *const LlamaTqSamplingParams,
+    ) -> c_int;
     pub fn llamatq_free(ctx: LlamaTqCtx);
     pub fn llamatq_get_kv_cache_size(ctx: LlamaTqCtx) -> size_t;
+    pub fn llamatq_print_memory_breakdown(ctx: LlamaTqCtx);
     pub fn llamatq_is_metal_active(ctx: LlamaTqCtx) -> c_int;
     pub fn llamatq_get_api_version() -> c_int;
 }

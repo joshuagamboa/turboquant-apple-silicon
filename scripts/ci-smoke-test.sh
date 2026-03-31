@@ -25,9 +25,22 @@ cargo clean
 cargo build --release
 
 mkdir -p models
-curl -L "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" \
-  -o models/tinyllama-1.1B.gguf
+if [ ! -f "models/tinyllama-1.1B.gguf" ]; then
+    curl -L "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" \
+      -o models/tinyllama-1.1B.gguf
+fi
 
-./target/release/turboquant-llama-rs models/tinyllama-1.1B.gguf "Test"
+echo "--- Running test 1: Default Greedy Sampling ---"
+./target/release/turboquant-llama-rs models/tinyllama-1.1B.gguf "Test" | tee test1.log
+grep "KV Cache Size:" test1.log
+
+if grep -q "0 bytes" test1.log; then
+    echo "ERROR: KV Cache size is 0 bytes!"
+    exit 1
+fi
+
+echo "--- Running test 2: Sampling + Diagnostics ---"
+./target/release/turboquant-llama-rs models/tinyllama-1.1B.gguf "Hello" --temp 0.8 --top-p 0.9 --seed 42 --max-tokens 10 --verbose | tee test2.log
+grep "=== Memory Breakdown ===" test2.log
 
 echo "=== Smoke Test Passed ==="

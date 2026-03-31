@@ -40,13 +40,34 @@ typedef struct {
 llamatq_ctx llamatq_create(const llamatq_params* params);
 
 /**
- * Evaluate prompt and return token count
+ * Evaluate prompt and return token count (using default greedy sampling)
  * @param ctx Context from llamatq_create
  * @param prompt Input text
  * @param max_tokens Maximum tokens to generate
  * @return Number of tokens generated, or -1 on error
  */
 int llamatq_eval(llamatq_ctx ctx, const char* prompt, int max_tokens);
+
+typedef struct {
+    float temperature;   // 0.0 = greedy, > 0 = stochastic
+    float top_p;         // 1.0 = disabled, < 1.0 = nucleus sampling
+    uint32_t seed;       // RNG seed for reproducibility
+} llamatq_sampling_params;
+
+/**
+ * Evaluate prompt using specific sampling parameters
+ * @param ctx Context from llamatq_create
+ * @param prompt Input text
+ * @param max_tokens Maximum tokens to generate
+ * @param sparams Sampling parameters (temperature, top_p, seed)
+ * @return Number of tokens generated, or -1 on error
+ */
+int llamatq_eval_with_sampling(
+    llamatq_ctx ctx, 
+    const char* prompt, 
+    int max_tokens, 
+    const llamatq_sampling_params* sparams
+);
 
 /**
  * Free context and release resources
@@ -57,6 +78,11 @@ void llamatq_free(llamatq_ctx ctx);
  * Get KV cache size in bytes (for verification)
  */
 size_t llamatq_get_kv_cache_size(llamatq_ctx ctx);
+
+/**
+ * Print detailed memory breakdown for the context to standard output/log
+ */
+void llamatq_print_memory_breakdown(llamatq_ctx ctx);
 
 /**
  * Check if Metal backend is active

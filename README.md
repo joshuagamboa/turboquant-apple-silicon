@@ -79,10 +79,25 @@ cargo build --release
 ### 3. Run
 
 ```bash
-./target/release/turboquant-llama-rs models/your-model.gguf "Hello, world!"
+./target/release/turboquant-llama-rs models/your-model.gguf "Hello, world!" --temp 0.7 --top-p 0.9 --max-tokens 512
 ```
 
 ---
+
+## CLI Options
+
+The wrapper provides several options to control text generation and diagnostics:
+
+| Option | Default | Description |
+|---|---|---|
+| `<model>` | (Required) | Path to the GGUF model file. |
+| `[prompt]`| `"Hello, world!"` | The text prompt to start generation. |
+| `--temp` | `0.0` | Temperature for sampling. `0.0` means greedy decoding (most likely token). Higher values (> 0) increase stochasticity/creativity. |
+| `--top-p` | `1.0` | Nucleus sampling. `1.0` means disabled. Low values (e.g. `0.9`) restrict sampling to the most probable cumulative tokens. |
+| `--seed` | `0` | RNG seed for reproducible generation. |
+| `--max-tokens` | `256` | Maximum number of tokens to generate before stopping. |
+| `--verbose` | (Flag) | Print a detailed breakdown of memory usage per device before generation starts. |
+
 
 ## Model Compatibility
 

@@ -58,9 +58,9 @@ llamatq_ctx llamatq_create(const llamatq_params* params) {
 }
 
 // FIX #6: Minimal inference loop pseudocode included
-int llamatq_eval(llamatq_ctx ctx_ptr, const char* prompt, int max_tokens) {
+int llamatq_eval_with_sampling(llamatq_ctx ctx_ptr, const char* prompt, int max_tokens, const llamatq_sampling_params* sparams) {
     struct llamatq_context* ctx = (struct llamatq_context*)ctx_ptr;
-    if (!ctx || !prompt) return -1;
+    if (!ctx || !prompt || !sparams) return -1;
     
     // 1. Tokenize input
     int max_prompt_tokens = 2048;
@@ -83,11 +83,17 @@ int llamatq_eval(llamatq_ctx ctx_ptr, const char* prompt, int max_tokens) {
     }
     
     // 3. Sampling loop
-    struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-    struct llama_sampler* smpl = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    struct llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();
+    struct llama_sampler* smpl = llama_sampler_chain_init(chain_params);
     
-    int n_past = n_tokens;
+    if (sparams->temperature <= 0.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(sparams->top_p, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(sparams->temperature));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(sparams->seed));
+    }
+    
     int generated_tokens = 0;
     
     for (int i = 0; i < max_tokens; i++) {
@@ -112,7 +118,6 @@ int llamatq_eval(llamatq_ctx ctx_ptr, const char* prompt, int max_tokens) {
         if (llama_decode(ctx->ctx, batch) != 0) {
             break;
         }
-        n_past++;
         generated_tokens++;
     }
     
@@ -121,6 +126,15 @@ int llamatq_eval(llamatq_ctx ctx_ptr, const char* prompt, int max_tokens) {
     free(tokens);
     printf("\n");
     return generated_tokens;
+}
+
+int llamatq_eval(llamatq_ctx ctx_ptr, const char* prompt, int max_tokens) {
+    llamatq_sampling_params default_sparams = {
+        .temperature = 0.0f,
+        .top_p = 1.0f,
+        .seed = 0
+    };
+    return llamatq_eval_with_sampling(ctx_ptr, prompt, max_tokens, &default_sparams);
 }
 
 void llamatq_free(llamatq_ctx ctx_ptr) {
@@ -133,7 +147,16 @@ void llamatq_free(llamatq_ctx ctx_ptr) {
 }
 
 size_t llamatq_get_kv_cache_size(llamatq_ctx ctx_ptr) {
-    return 0; // Return 0 since undocumented API was removed
+    struct llamatq_context* ctx = (struct llamatq_context*)ctx_ptr;
+    if (!ctx) return 0;
+    return llama_state_get_size(ctx->ctx);
+}
+
+void llamatq_print_memory_breakdown(llamatq_ctx ctx_ptr) {
+    struct llamatq_context* ctx = (struct llamatq_context*)ctx_ptr;
+    if (ctx) {
+        llama_memory_breakdown_print(ctx->ctx);
+    }
 }
 
 int llamatq_is_metal_active(llamatq_ctx ctx_ptr) {

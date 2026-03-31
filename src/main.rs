@@ -1,26 +1,47 @@
-// src/main.rs
 mod ffi;
 mod context;
 
-use context::{TurboQuantCtx, TurboQuantError};
+use clap::Parser;
+use context::{SamplingParams, TurboQuantCtx};
 use ffi::LlamaTqCacheType;
-use std::env;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "TurboQuant Apple Silicon Inference Native Wrapper")]
+struct Args {
+    /// Path to the GGUF model file
+    #[arg(required = true)]
+    model: String,
+
+    /// Prompt to evaluate
+    #[arg(default_value = "Hello, world!")]
+    prompt: String,
+
+    /// Temperature for sampling (0.0 = greedy)
+    #[arg(long, default_value_t = 0.0)]
+    temp: f32,
+
+    /// Top-p (nucleus) sampling (1.0 = disabled)
+    #[arg(long, default_value_t = 1.0)]
+    top_p: f32,
+
+    /// RNG seed for reproducibility
+    #[arg(long, default_value_t = 0)]
+    seed: u32,
+
+    /// Maximum number of tokens to generate
+    #[arg(long, default_value_t = 256)]
+    max_tokens: i32,
+
+    /// Print detailed memory breakdown diagnostics
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
+}
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    
-    if args.len() < 2 {
-        eprintln!("Usage: {} <model.gguf> [prompt]", args[0]);
-        eprintln!();
-        eprintln!("⚠️ THREADING: Context must stay on single OS thread");
-        std::process::exit(1);
-    }
-    
-    let model_path = &args[1];
-    let prompt = args.get(2).map(|s| s.as_str()).unwrap_or("Hello, world!");
-    
+    let args = Args::parse();
+
     let ctx = match TurboQuantCtx::new(
-        model_path,
+        &args.model,
         99,
         LlamaTqCacheType::Turbo3,
         2048,
@@ -32,7 +53,13 @@ fn main() {
             std::process::exit(1);
         }
     };
-    
+
+    if args.verbose {
+        println!("=== Memory Breakdown ===");
+        ctx.print_memory_breakdown();
+        println!("========================");
+    }
+
     match ctx.verify_metal() {
         Ok(()) => println!("✓ Metal backend active"),
         Err(e) => {
@@ -40,14 +67,21 @@ fn main() {
             eprintln!("   Ensure GGML_METAL=ON and running on Apple Silicon");
         }
     }
-    
-    println!("KV Cache Size: {} bytes", ctx.kv_cache_size());
+
+    let kv_size = ctx.kv_cache_size();
+    println!("KV Cache Size: {} bytes ({:.2} MB)", kv_size, kv_size as f64 / 1024.0 / 1024.0);
     println!("API Version: {}", unsafe { ffi::llamatq_get_api_version() });
-    
-    match ctx.eval(prompt, 256) {
+
+    let sparams = SamplingParams {
+        temperature: args.temp,
+        top_p: args.top_p,
+        seed: args.seed,
+    };
+
+    match ctx.eval_with_sampling(&args.prompt, args.max_tokens, sparams) {
         Ok(tokens) => {
             println!("\nGenerated {} tokens", tokens);
-        },
+        }
         Err(e) => {
             eprintln!("Evaluation failed: {}", e);
             std::process::exit(1);
