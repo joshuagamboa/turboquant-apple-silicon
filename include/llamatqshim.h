@@ -12,6 +12,18 @@ extern "C" {
 // API version is passed via compiler flag (-D), not defined here
 // The shim expects LLAMA_TURBOQUANT_API_VERSION to be defined by build.rs
 
+/**
+ * Disable all internal llama.cpp logging. Useful for TUI applications
+ * where standard error logs will corrupt the terminal screen.
+ */
+void llamatq_disable_logs(void);
+
+/**
+ * Initialize file logging. Redirects all llama.cpp and ggml logs
+ * to the specified file path. Passing NULL disables logging.
+ */
+void llamatq_init_logging(const char* log_path);
+
 typedef void* llamatq_ctx;
 
 // Cache type enumeration (fork-specific)

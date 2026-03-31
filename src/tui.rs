@@ -16,12 +16,12 @@
 //  └─────────────────────────────────────────────────────┘
 
 use std::fmt::{self, Write as FmtWrite};
-use std::io;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use tuinix::{
-    KeyCode, Terminal, TerminalColor, TerminalEvent, TerminalFrame, TerminalInput, TerminalSize,
-    TerminalStyle,
+    KeyCode, MouseEvent, MouseInput, Terminal, TerminalColor, TerminalEvent, TerminalFrame,
+    TerminalInput, TerminalSize, TerminalStyle,
 };
 
 use crate::chat::ChatSession;
@@ -30,28 +30,34 @@ use crate::context::{InferenceStats, SamplingParams, TurboQuantCtx};
 // ── Colour / style palette ────────────────────────────────────────────────────
 
 fn style_header() -> TerminalStyle {
-    TerminalStyle::new().bold().fg_color(TerminalColor::new(30, 215, 160)) // teal
+    TerminalStyle::new().bold().fg_color(TerminalColor::new(0, 255, 150)) // vibrant teal/green
 }
 fn style_user() -> TerminalStyle {
-    TerminalStyle::new().bold().fg_color(TerminalColor::new(100, 180, 255)) // light blue
+    TerminalStyle::new().bold().fg_color(TerminalColor::new(80, 200, 255)) // bright azure
 }
 fn style_assistant() -> TerminalStyle {
-    TerminalStyle::new().fg_color(TerminalColor::new(230, 230, 230)) // near-white
+    TerminalStyle::new().fg_color(TerminalColor::new(245, 245, 245)) // pure white
 }
 fn style_streaming() -> TerminalStyle {
-    TerminalStyle::new().fg_color(TerminalColor::new(200, 200, 100)) // warm yellow
+    TerminalStyle::new().fg_color(TerminalColor::new(255, 255, 150)) // soft yellow
 }
 fn style_status() -> TerminalStyle {
-    TerminalStyle::new().fg_color(TerminalColor::new(140, 140, 160)) // muted
+    TerminalStyle::new().fg_color(TerminalColor::new(150, 150, 170)) // muted blue-gray
 }
 fn style_error() -> TerminalStyle {
-    TerminalStyle::new().bold().fg_color(TerminalColor::new(255, 80, 80)) // red
+    TerminalStyle::new().bold().fg_color(TerminalColor::new(255, 100, 100)) // vibrant red
 }
-fn style_input() -> TerminalStyle {
+fn style_input_prompt() -> TerminalStyle {
+    TerminalStyle::new().bold().fg_color(TerminalColor::new(0, 255, 128)) // spring green
+}
+fn style_input_text() -> TerminalStyle {
     TerminalStyle::new().bold().fg_color(TerminalColor::WHITE)
 }
 fn style_dim() -> TerminalStyle {
-    TerminalStyle::new().fg_color(TerminalColor::new(90, 90, 110))
+    TerminalStyle::new().fg_color(TerminalColor::new(110, 110, 130))
+}
+fn style_think() -> TerminalStyle {
+    TerminalStyle::new().italic().fg_color(TerminalColor::new(140, 140, 160)) // dim gray italic
 }
 
 // ── Message display record ────────────────────────────────────────────────────
@@ -86,13 +92,17 @@ pub struct ChatTui<'a> {
     streaming_buf: String,
     is_generating: bool,
 
-    /// Last inference stats (displayed in status bar).
+    /// last inference stats (displayed in status bar).
     last_stats:  Option<InferenceStats>,
 
     /// One-line notification (error / info) shown in the status bar.
     notification: Option<String>,
     notification_error: bool,
-}
+
+    /// Whether to lock the view to the bottom (auto-scroll).
+    stick_to_bottom: bool,
+    }
+
 
 impl<'a> ChatTui<'a> {
     pub fn new(
@@ -118,12 +128,23 @@ impl<'a> ChatTui<'a> {
             last_stats:  None,
             notification: None,
             notification_error: false,
+            stick_to_bottom: true,
         })
     }
 
     // ── Run loop ──────────────────────────────────────────────────────────────
 
     pub fn run(mut self) -> io::Result<()> {
+        // Disable line-wrap to prevent scrolling out of bounds on full-pane draw
+        print!("\x1b[?7l");
+        // Enable mouse reporting: Button Motion (1002) + SGR Extended Mode (1006)
+        // These are more robust for trackpads than the basic 1000 mode.
+        print!("\x1b[?1002h\x1b[?1006h");
+        let _ = io::stdout().flush();
+
+        // Enable mouse capture via tuinix as well
+        let _ = self.terminal.enable_mouse_input();
+
         // Initial welcome render
         self.redraw()?;
 
@@ -131,9 +152,15 @@ impl<'a> ChatTui<'a> {
             // poll_event with 50 ms timeout so we can react to resize etc.
             match self.terminal.poll_event(&[], &[], Some(Duration::from_millis(50)))? {
                 Some(TerminalEvent::Input(input)) => {
-                    let TerminalInput::Key(key) = input else { continue };
-                    if !self.handle_key(key.code)? {
-                        break; // Ctrl+C / escape
+                    match input {
+                        TerminalInput::Key(key) => {
+                            if !self.handle_key(key)? {
+                                break; // Ctrl+C / escape
+                            }
+                        }
+                        TerminalInput::Mouse(mouse) => {
+                            self.handle_mouse(mouse)?;
+                        }
                     }
                 }
                 Some(TerminalEvent::Resize(_)) => {
@@ -144,21 +171,40 @@ impl<'a> ChatTui<'a> {
             }
         }
 
+        // Re-enable line wrap and disable mouse capture
+        let _ = self.terminal.disable_mouse_input();
+        print!("\x1b[?1002l\x1b[?1006l");
+        print!("\x1b[?7h");
+        let _ = io::stdout().flush();
+
         Ok(())
     }
 
     // ── Key handling ──────────────────────────────────────────────────────────
 
     /// Returns `false` to signal the run loop should exit.
-    fn handle_key(&mut self, code: KeyCode) -> io::Result<bool> {
-        match code {
+    fn handle_key(&mut self, key: tuinix::KeyInput) -> io::Result<bool> {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("turboquant.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "[TUI] handle_key: code={:?} ctrl={} alt={}", key.code, key.ctrl, key.alt);
+        }
+
+        match key.code {
             // Ctrl+C / Ctrl+D → exit
-            KeyCode::Char('c') | KeyCode::Char('d') => {
-                // tuinix provides modifier keys through KeyInput.modifiers; since we
-                // only have `code` here we check both Ctrl chars. In practice the
-                // terminal sends ETX (0x03) for Ctrl+C which KeyCode maps to Char('c').
-                // A cleaner check would use modifiers but this works for our use case.
+            KeyCode::Char('c') | KeyCode::Char('d') if key.ctrl => {
                 return Ok(false);
+            }
+
+            // Ctrl+U / Ctrl+D / Ctrl+B / Ctrl+F for scrolling (MacBook friendly)
+            KeyCode::Char('u') | KeyCode::Char('b') if key.ctrl => {
+                self.scroll = self.scroll.saturating_sub(10);
+                self.stick_to_bottom = false;
+                self.redraw()?;
+            }
+            KeyCode::Char('d') | KeyCode::Char('f') if key.ctrl => {
+                self.scroll += 10;
+                self.stick_to_bottom = false;
+                self.redraw()?;
             }
 
             // Enter → submit
@@ -205,10 +251,12 @@ impl<'a> ChatTui<'a> {
             // Scroll history up/down with page keys
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(5);
+                self.stick_to_bottom = false;
                 self.redraw()?;
             }
             KeyCode::PageDown => {
                 self.scroll += 5;
+                self.stick_to_bottom = false;
                 self.redraw()?;
             }
 
@@ -237,10 +285,39 @@ impl<'a> ChatTui<'a> {
         Ok(true)
     }
 
+    fn handle_mouse(&mut self, mouse: MouseInput) -> io::Result<()> {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("turboquant.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "[TUI] handle_mouse: event={:?} pos={:?}", mouse.event, mouse.position);
+        }
+
+        match mouse.event {
+            MouseEvent::ScrollUp => {
+                self.scroll = self.scroll.saturating_sub(3);
+                self.stick_to_bottom = false;
+                self.redraw()?;
+            }
+            MouseEvent::ScrollDown => {
+                self.scroll += 3;
+                // Note: we don't set stick_to_bottom here because we don't know max_scroll yet
+                // The render() function will handle clamping.
+                self.redraw()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     // ── Submit user message ───────────────────────────────────────────────────
 
     fn submit(&mut self) -> io::Result<()> {
         let raw = self.input.trim().to_string();
+        
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("turboquant.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "[TUI] submit: raw_len={} input_len={}", raw.len(), self.input.len());
+        }
+
         if raw.is_empty() {
             return Ok(());
         }
@@ -340,6 +417,12 @@ impl<'a> ChatTui<'a> {
         }
 
         self.redraw()?;
+
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("turboquant.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "[TUI] submit: inference loop returned");
+        }
+
         Ok(())
     }
 
@@ -347,181 +430,166 @@ impl<'a> ChatTui<'a> {
 
     fn redraw(&mut self) -> io::Result<()> {
         let size = self.terminal.size();
+        
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("turboquant.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "[TUI] redraw: size={:?} input_len={} cursor={}", size, self.input.len(), self.cursor);
+        }
+
         let mut frame = TerminalFrame::new(size);
         self.render(&mut frame, size).map_err(io::Error::other)?;
         self.terminal.draw(frame)?;
         Ok(())
     }
 
-    fn render(&self, frame: &mut TerminalFrame, size: TerminalSize) -> fmt::Result {
+    fn render(&mut self, frame: &mut TerminalFrame, size: TerminalSize) -> fmt::Result {
         let cols = size.cols as usize;
         let rows = size.rows as usize;
 
-        // Safety: rows can be very small in theory.
-        if rows < 5 || cols < 20 {
+        if rows < 6 || cols < 30 {
             write!(frame, "Terminal too small")?;
             return Ok(());
         }
 
-        // Row budget:
-        //   row 0          → header
-        //   rows 1..(n-3)  → history + streaming
-        //   row n-3        → separator
-        //   row n-2        → input line
-        //   row n-1        → status bar
+        // Layout rows:
+        // row 0: Header
+        // rows 1..(rows-4): History
+        // row (rows-3): Separator
+        // row (rows-2): Input prompt
+        // row (rows-1): Status bar
         let history_rows = rows.saturating_sub(4);
 
-        // ── Header ────────────────────────────────────────────────────────────
+        // ── 1. Header ──────────────────────────────────────────────────────────
+        let header_style = style_header();
         let header_text = format!(
-            " TurboQuant Chat │ {} │ {} │ {}",
-            truncate_str(&self.model_name, 30),
+            " 󱚣 TurboQuant Chat │ {} │ {} │ {}",
+            truncate_str(&self.model_name, 25),
             self.session.template_name(),
             self.session.context_summary(),
         );
-        write_line(frame, cols, &header_text, style_header())?;
+        write_line(frame, cols, &header_text, header_style, true)?;
 
-        // ── History pane ──────────────────────────────────────────────────────
-        // Collect all lines to display
-        let mut display_lines: Vec<(bool, String)> = Vec::new(); // (is_user, line)
+        // ── 2. History Pane ──────────────────────────────────────────────────
+        let mut display_lines: Vec<(TerminalStyle, String)> = Vec::new();
 
         for msg in &self.messages {
-            let prefix = if msg.is_user { "  You › " } else { "   AI › " };
+            let (prefix, style) = if msg.is_user {
+                ("  You › ", style_user())
+            } else {
+                ("   AI › ", style_assistant())
+            };
+            
             let wrapped = wrap_text(&msg.text, cols.saturating_sub(prefix.len()));
             for (i, line) in wrapped.iter().enumerate() {
-                if i == 0 {
-                    display_lines.push((msg.is_user, format!("{}{}", prefix, line)));
+                let line_text = if i == 0 {
+                    format!("{}{}", prefix, line)
                 } else {
-                    let pad = " ".repeat(prefix.len());
-                    display_lines.push((msg.is_user, format!("{}{}", pad, line)));
-                }
+                    format!("{}{}", " ".repeat(prefix.len()), line)
+                };
+                
+                // Detection for thinking blocks (very basic)
+                let current_style = if !msg.is_user && (line.contains("<think>") || line.contains("</think>")) {
+                    style_think()
+                } else {
+                    style
+                };
+                
+                display_lines.push((current_style, line_text));
             }
-            display_lines.push((msg.is_user, String::new())); // blank line separator
+            display_lines.push((style, String::new())); // blank separator
         }
 
-        // If generating, show the streaming buffer with a cursor
-        let streaming_lines = if self.is_generating || !self.streaming_buf.is_empty() {
+        // Streaming buffer if active
+        if self.is_generating || !self.streaming_buf.is_empty() {
             let prefix = "   AI › ";
+            let style = style_streaming();
             let wrapped = wrap_text(
                 &format!("{}_", self.streaming_buf),
                 cols.saturating_sub(prefix.len()),
             );
-            let mut sl: Vec<String> = Vec::new();
             for (i, line) in wrapped.iter().enumerate() {
-                if i == 0 {
-                    sl.push(format!("{}{}", prefix, line));
+                let line_text = if i == 0 {
+                    format!("{}{}", prefix, line)
                 } else {
-                    let pad = " ".repeat(prefix.len());
-                    sl.push(format!("{}{}", pad, line));
-                }
+                    format!("{}{}", " ".repeat(prefix.len()), line)
+                };
+                display_lines.push((style, line_text));
             }
-            sl
-        } else {
-            Vec::new()
-        };
+        }
 
-        // Join all lines and apply scroll
-        let total_lines = display_lines.len() + streaming_lines.len();
+        let total_lines = display_lines.len();
         let max_scroll = total_lines.saturating_sub(history_rows);
-        let effective_scroll = self.scroll.min(max_scroll);
-
-        let all_lines_count = display_lines.len() + streaming_lines.len();
-        let skip = if all_lines_count > history_rows {
-            // Auto-scroll to bottom unless user has scrolled up.
-            if effective_scroll == 0 {
-                all_lines_count - history_rows
-            } else {
-                effective_scroll
-            }
+        
+        // If we are generating or the user hasn't manually scrolled up, stick to bottom
+        let effective_scroll = if self.stick_to_bottom || self.is_generating {
+            max_scroll
         } else {
-            0
+            self.scroll.min(max_scroll)
         };
+        
+        let skip = effective_scroll;
 
-        // Draw history_rows lines
-        let mut rendered_history = 0usize;
-        let combined_len = display_lines.len() + streaming_lines.len();
-
-        for row_idx in 0..history_rows {
-            let line_idx = skip + row_idx;
-            if line_idx >= combined_len {
-                // Blank padding
-                write_line(frame, cols, "", style_dim())?;
-                continue;
-            }
-
-            if line_idx < display_lines.len() {
-                let (is_user, ref line) = display_lines[line_idx];
-                let style = if is_user { style_user() } else { style_assistant() };
-                write_line(frame, cols, line, style)?;
+        for i in 0..history_rows {
+            let idx = skip + i;
+            if idx < total_lines {
+                let (style, ref text) = display_lines[idx];
+                write_line(frame, cols, text, style, true)?;
             } else {
-                let sl_idx = line_idx - display_lines.len();
-                if sl_idx < streaming_lines.len() {
-                    write_line(frame, cols, &streaming_lines[sl_idx], style_streaming())?;
+                // Empty lines to fill history area
+                write_line(frame, cols, "", style_dim(), true)?;
+            }
+        }
+
+        // ── 3. Separator ────────────────────────────────────────────────────────
+        let sep_style = style_dim();
+        let sep_char = "━".repeat(cols.saturating_sub(4)); // Thicker separator
+        let separator = format!("  {}  ", sep_char);
+        write_line(frame, cols, &separator, sep_style, true)?;
+
+        // ── 4. Input Line ──────────────────────────────────────────────────────
+        if self.is_generating {
+            let msg = "  󰚩 Thinking... (Ctrl+C to stop)";
+            write_line(frame, cols, msg, style_dim(), true)?;
+        } else {
+            let prompt = " ❯ ";
+            let prompt_style = style_input_prompt();
+            
+            let max_input_w = cols.saturating_sub(prompt.len() + 2);
+            let input_chars: Vec<char> = self.input.chars().collect();
+            let visible_start = if input_chars.len() > max_input_w {
+                input_chars.len() - max_input_w
+            } else {
+                0
+            };
+            let visible_chars: Vec<char> = input_chars[visible_start..].iter().cloned().collect();
+            let cursor_visible = self.cursor.saturating_sub(visible_start);
+
+            // Start line with prompt
+            write!(frame, "{}{}", prompt_style, prompt)?;
+            
+            // Draw input text with cursor
+            let text_style = style_input_text();
+            write!(frame, "{}", text_style)?;
+            
+            for (i, &ch) in visible_chars.iter().enumerate() {
+                if i == cursor_visible {
+                    write!(frame, "{}{}{}{}", text_style.reverse(), ch, TerminalStyle::RESET, text_style)?;
                 } else {
-                    write_line(frame, cols, "", style_dim())?;
+                    write!(frame, "{}", ch)?;
                 }
             }
-            rendered_history += 1;
-        }
-
-        // Fill any remaining history rows if short
-        for _ in rendered_history..history_rows {
-            write_line(frame, cols, "", style_dim())?;
-        }
-
-        // ── Separator ─────────────────────────────────────────────────────────
-        let sep = "─".repeat(cols);
-        writeln!(frame, "{}{}{}", style_dim(), sep, TerminalStyle::RESET)?;
-
-        // ── Input line ────────────────────────────────────────────────────────
-        let prompt_prefix = " ❯ ";
-        let max_input_w = cols.saturating_sub(prompt_prefix.len() + 1);
-        // Show only the last `max_input_w` chars if the input is very long
-        let input_chars: Vec<char> = self.input.chars().collect();
-        let visible_start = if input_chars.len() > max_input_w {
-            input_chars.len() - max_input_w
-        } else {
-            0
-        };
-        let visible: String = input_chars[visible_start..].iter().collect();
-        let cursor_visible = self.cursor.saturating_sub(visible_start);
-
-        // Build the input line with a block cursor
-        let mut input_line = String::new();
-        let visible_chars: Vec<char> = visible.chars().collect();
-        for (i, &ch) in visible_chars.iter().enumerate() {
-            if i == cursor_visible {
-                // Draw cursor block
-                let _ = write!(input_line, "{}\x1b[7m{}\x1b[27m", style_input(), ch);
-            } else {
-                input_line.push(ch);
+            if cursor_visible >= visible_chars.len() {
+                write!(frame, "{} {}", text_style.reverse(), TerminalStyle::RESET)?;
             }
-        }
-        // If cursor is at the end, draw a block space
-        if cursor_visible >= visible_chars.len() {
-            let _ = write!(input_line, "\x1b[7m \x1b[27m");
-        }
-
-        if self.is_generating {
-            writeln!(
-                frame,
-                "{} {} {}{}",
-                style_dim(),
-                "Generating… (Ctrl+C to abort)",
-                TerminalStyle::RESET,
-                " ".repeat(cols.saturating_sub(32)),
-            )?;
-        } else {
-            writeln!(
-                frame,
-                "{}{}{}{}",
-                style_input(),
-                prompt_prefix,
-                TerminalStyle::RESET,
-                input_line,
-            )?;
+            
+            // Pad to end of line
+            let visible_len = prompt.len() + visible_chars.len() + (if cursor_visible >= visible_chars.len() { 1 } else { 0 });
+            let padding = cols.saturating_sub(visible_len);
+            write!(frame, "{}{}", TerminalStyle::RESET, " ".repeat(padding))?;
+            writeln!(frame)?;
         }
 
-        // ── Status bar ────────────────────────────────────────────────────────
+        // ── 5. Status Bar ──────────────────────────────────────────────────────
         let stats_text = if let Some(s) = &self.last_stats {
             format!("{:.1} tok/s  TTFT {:.0}ms", s.generation_tps, s.ttft_ms)
         } else {
@@ -531,12 +599,14 @@ impl<'a> ChatTui<'a> {
         let notif_text = if let Some(n) = &self.notification {
             n.clone()
         } else {
-            "Ctrl+C: quit  /reset  /help  /stats  PgUp/Dn: scroll".to_string()
+            "Ctrl+C: quit  |  /reset  |  /help  |  PgUp/Dn: scroll".to_string()
         };
 
         let status = format!(" {} │ {}", stats_text, notif_text);
-        let style = if self.notification_error { style_error() } else { style_status() };
-        write_line(frame, cols, &truncate_str(&status, cols), style)?;
+        let status_style = if self.notification_error { style_error() } else { style_status() };
+        
+        // Final line: NO trailing newline
+        write_line(frame, cols, &truncate_str(&status, cols), status_style, false)?;
 
         Ok(())
     }
@@ -544,7 +614,7 @@ impl<'a> ChatTui<'a> {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn scroll_to_bottom(&mut self) {
-        self.scroll = 0; // 0 means "auto-scroll to bottom" in our renderer
+        self.stick_to_bottom = true;
     }
 
     fn set_notification(&mut self, msg: &str, error: bool) {
@@ -555,19 +625,26 @@ impl<'a> ChatTui<'a> {
 
 // ── Utility functions ─────────────────────────────────────────────────────────
 
-/// Write a fixed-width line padded to `cols` with a trailing newline.
-fn write_line(frame: &mut TerminalFrame, cols: usize, text: &str, style: TerminalStyle) -> fmt::Result {
+/// Write a fixed-width line padded to `cols`.
+fn write_line(frame: &mut TerminalFrame, cols: usize, text: &str, style: TerminalStyle, newline: bool) -> fmt::Result {
     // Measure visible character count (ignore ANSI escape sequences).
     let visible_len = strip_ansi_len(text);
     let padding = cols.saturating_sub(visible_len);
-    writeln!(
+    
+    write!(
         frame,
         "{}{}{}{}",
         style,
         text,
         TerminalStyle::RESET,
         " ".repeat(padding)
-    )
+    )?;
+    
+    if newline {
+        writeln!(frame)?;
+    }
+    
+    Ok(())
 }
 
 /// Wrap text to `max_width` characters per line.

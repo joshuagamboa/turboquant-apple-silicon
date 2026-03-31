@@ -62,6 +62,8 @@ pub struct LlamaTqEvalStats {
 #[link(name = "llamatqshim")]
 extern "C" {
     pub fn llamatq_create(params: *const LlamaTqParams) -> LlamaTqCtx;
+    pub fn llamatq_disable_logs();
+    pub fn llamatq_init_logging(log_path: *const c_char);
 
     /// Convenience greedy-sampling wrapper; does not collect stats.
     pub fn llamatq_eval(ctx: LlamaTqCtx, prompt: *const c_char, max_tokens: c_int) -> c_int;

@@ -157,6 +157,19 @@ fn eval_error_description(code: i32) -> &'static str {
 
 // ── Safe context wrapper ──────────────────────────────────────────────────────
 
+pub fn disable_logs() {
+    unsafe { ffi::llamatq_disable_logs() }
+}
+
+/// Initialize file logging for backend diagnostics.
+pub fn init_logging(path: &str) -> std::io::Result<()> {
+    let c_path = std::ffi::CString::new(path).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+    })?;
+    unsafe { ffi::llamatq_init_logging(c_path.as_ptr()) };
+    Ok(())
+}
+
 pub struct TurboQuantCtx {
     raw:     LlamaTqCtx,
     _marker: PhantomData<NotSendSync>,

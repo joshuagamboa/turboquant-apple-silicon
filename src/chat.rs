@@ -192,7 +192,8 @@ impl ChatSession {
         self.n_past = ctx.kv_used();
         self.system_injected = true;
 
-        let sys_msg = ChatMessage::system(system_text);
+        let mut sys_msg = ChatMessage::system(system_text);
+        sys_msg.n_tokens = self.n_past;
         self.messages.push(sys_msg);
 
         Ok(())
@@ -208,10 +209,17 @@ impl ChatSession {
         &mut self,
         ctx: &TurboQuantCtx,
     ) -> Result<(), TurboQuantError> {
-        let evict = self.config.evict_tokens();
+        // We want to evict from the middle, preserving the system prompt (pos 0..X)
+        // and the most recent history.
+        let sys_tokens = if !self.messages.is_empty() && self.messages[0].role == Role::System {
+            self.messages[0].n_tokens.max(1)
+        } else {
+            0
+        };
 
-        // KV Shift: remove positions [0, evict) and compact the remainder.
-        ctx.kv_shift(0, evict);
+        let evict = self.config.evict_tokens();
+        // Shift range [sys_tokens, sys_tokens + evict) out.
+        ctx.kv_shift(sys_tokens, sys_tokens + evict);
 
         // Verify the shift succeeded by checking the new KV occupancy.
         let new_n_past = ctx.kv_used();

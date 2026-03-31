@@ -34,7 +34,7 @@ struct Args {
     seed: u32,
 
     /// Maximum number of tokens to generate per turn
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = 4096)]
     max_tokens: i32,
 
     /// Context size (number of tokens)
@@ -60,6 +60,36 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    // Session logging & crash capture for TUI
+    if args.chat {
+        let _ = context::init_logging("turboquant.log");
+        
+        std::panic::set_hook(Box::new(|info| {
+            let payload = info.payload().downcast_ref::<&str>().copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("unknown panic");
+            let location = info.location().map(|l| format!(" at {}:{}", l.file(), l.line()))
+                .unwrap_or_default();
+            
+            let msg = format!("\n\n!!! RUST PANIC !!!\nMessage: {}{}\n", payload, location);
+            
+            // Try to log to file
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("turboquant.log") {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", msg);
+            }
+            
+            // Still print to stderr as a last resort
+            eprintln!("{}", msg);
+            
+            // Safety measure to ensure auto-wrap is re-enabled if panicked in TUI
+            print!("\x1b[?7h");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }));
+
+        eprintln!("Loading model into TurboQuant Engine... (this may take a moment)");
+    }
 
     // ── Context creation ──────────────────────────────────────────────────────
     let ctx = match TurboQuantCtx::new(
@@ -109,8 +139,8 @@ fn main() {
     if args.chat {
         let win_config = WindowConfig {
             ctx_size:         args.ctx_size as i32,
-            keep_ratio:       0.75,
-            response_reserve: args.max_tokens.max(256),
+            keep_ratio:       0.5,
+            response_reserve: args.max_tokens.max(1024),
         };
 
         let mut session = if let Some(ref tmpl_str) = args.template {

@@ -37,6 +37,44 @@ int llamatq_get_api_version(void) {
     return LLAMA_TURBOQUANT_API_VERSION;
 }
 
+// ── Logging toggle ────────────────────────────────────────────────────────────
+static FILE* g_log_file = NULL;
+
+static void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+    (void)level;
+    (void)text;
+    (void)user_data;
+}
+
+static void file_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+    (void)level;
+    (void)user_data;
+    if (g_log_file) {
+        fprintf(g_log_file, "%s", text);
+        fflush(g_log_file);
+    }
+}
+
+void llamatq_disable_logs(void) {
+    llama_log_set(dummy_log_callback, NULL);
+}
+
+void llamatq_init_logging(const char* log_path) {
+    if (g_log_file) {
+        fclose(g_log_file);
+        g_log_file = NULL;
+    }
+    if (log_path) {
+        g_log_file = fopen(log_path, "a");
+        if (g_log_file) {
+            fprintf(g_log_file, "\n\n=== TurboQuant Inference Session Started ===\n");
+            llama_log_set(file_log_callback, NULL);
+        }
+    } else {
+        llamatq_disable_logs();
+    }
+}
+
 // ── Context creation ──────────────────────────────────────────────────────────
 llamatq_ctx llamatq_create(const llamatq_params* params) {
     if (!params || !params->model_path) return NULL;
