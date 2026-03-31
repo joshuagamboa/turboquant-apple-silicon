@@ -39,3 +39,6 @@ Makefile
 
 # Log files
 *.log
+
+# Test folders/files
+test/

@@ -1,9 +1,14 @@
 mod ffi;
 mod context;
+mod template;
+mod chat;
+mod tui;
 
 use clap::Parser;
 use context::{SamplingParams, TurboQuantCtx};
 use ffi::LlamaTqCacheType;
+use chat::{ChatSession, WindowConfig};
+use tui::ChatTui;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "TurboQuant Apple Silicon Inference Native Wrapper")]
@@ -12,7 +17,7 @@ struct Args {
     #[arg(required = true)]
     model: String,
 
-    /// Prompt to evaluate
+    /// Prompt to evaluate (one-shot mode only; ignored in --chat)
     #[arg(default_value = "Hello, world!")]
     prompt: String,
 
@@ -28,8 +33,8 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u32,
 
-    /// Maximum number of tokens to generate
-    #[arg(long, default_value_t = 256)]
+    /// Maximum number of tokens to generate per turn
+    #[arg(long, default_value_t = 512)]
     max_tokens: i32,
 
     /// Context size (number of tokens)
@@ -40,9 +45,17 @@ struct Args {
     #[arg(long, default_value_t = 512)]
     batch_size: u32,
 
-    /// Print detailed diagnostics: memory breakdown + full inference stats (TTFT, prompt TPS, etc.)
+    /// Print detailed diagnostics: memory breakdown + full inference stats
     #[arg(long, default_value_t = false)]
     verbose: bool,
+
+    /// Launch interactive multi-turn chat TUI
+    #[arg(long, default_value_t = false)]
+    chat: bool,
+
+    /// Override chat template (chatml | llama3 | mistral); auto-detected if omitted
+    #[arg(long)]
+    template: Option<String>,
 }
 
 fn main() {
@@ -65,7 +78,7 @@ fn main() {
 
     // ── Backend check ─────────────────────────────────────────────────────────
     match ctx.verify_metal() {
-        Ok(())  => println!("✓ Metal backend active"),
+        Ok(())  => eprintln!("✓ Metal backend active"),
         Err(e) => {
             eprintln!("⚠️  Warning: {}", e);
             eprintln!("   Ensure GGML_METAL=ON and running on Apple Silicon");
@@ -75,24 +88,80 @@ fn main() {
     // ── Verbose pre-run diagnostics ───────────────────────────────────────────
     if args.verbose {
         let kv_size = ctx.kv_cache_size();
-        println!(
+        eprintln!(
             "KV Cache Size: {} bytes ({:.2} MB)",
             kv_size,
             kv_size as f64 / 1024.0 / 1024.0
         );
-        println!("API Version:   {}", unsafe { ffi::llamatq_get_api_version() });
-        println!("=== Memory Breakdown ===");
+        eprintln!("API Version:   {}", unsafe { ffi::llamatq_get_api_version() });
+        eprintln!("=== Memory Breakdown ===");
         ctx.print_memory_breakdown();
-        println!("========================");
+        eprintln!("========================");
     }
 
-    // ── Inference ─────────────────────────────────────────────────────────────
     let sparams = SamplingParams {
         temperature: args.temp,
         top_p:       args.top_p,
         seed:        args.seed,
     };
 
+    // ── Chat TUI mode ─────────────────────────────────────────────────────────
+    if args.chat {
+        let win_config = WindowConfig {
+            ctx_size:         args.ctx_size as i32,
+            keep_ratio:       0.75,
+            response_reserve: args.max_tokens.max(256),
+        };
+
+        let mut session = if let Some(ref tmpl_str) = args.template {
+            use template::ChatTemplate;
+            let tmpl = match tmpl_str.to_lowercase().as_str() {
+                "chatml"  => ChatTemplate::ChatML,
+                "llama3"  => ChatTemplate::Llama3,
+                "mistral" => ChatTemplate::MistralInstruct,
+                other => {
+                    eprintln!("⚠️  Unknown template '{}'; auto-detecting.", other);
+                    ChatTemplate::detect(&ctx)
+                }
+            };
+            eprintln!("Ä Template: {}", tmpl);
+            ChatSession::with_template(tmpl, win_config)
+        } else {
+            let s = ChatSession::new(&ctx, win_config);
+            eprintln!("✓ Auto-detected template: {}", s.template_name());
+            s
+        };
+
+        // Extract the model file name for display in the TUI header
+        let model_display = std::path::Path::new(&args.model)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&args.model)
+            .to_string();
+
+        let tui = match ChatTui::new(
+            &mut session,
+            &ctx,
+            sparams,
+            args.max_tokens,
+            model_display,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("✗ Failed to initialise TUI: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        if let Err(e) = tui.run() {
+            eprintln!("✗ TUI error: {}", e);
+            std::process::exit(1);
+        }
+
+        return; // clean exit from chat mode
+    }
+
+    // ── One-shot inference (original behaviour) ───────────────────────────────
     let stats = match ctx.eval_with_sampling(&args.prompt, args.max_tokens, sparams) {
         Ok(stats) => stats,
         Err(e)    => {
@@ -103,10 +172,8 @@ fn main() {
 
     // ── Stats output ──────────────────────────────────────────────────────────
     if args.verbose {
-        // Full detail: TTFT, prompt processing speed, per-phase timing.
         stats.print_verbose();
     } else {
-        // Always-on compact summary: latency, token counts, generation TPS.
         stats.print_compact();
     }
 }

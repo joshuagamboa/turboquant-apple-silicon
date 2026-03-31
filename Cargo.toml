@@ -9,6 +9,7 @@ description = "TurboQuant KV cache quantization for llama.cpp on Apple Silicon"
 clap = { version = "4.6.0", features = ["derive"] }
 libc = "0.2"
 thiserror = "1.0"
+tuinix = "0.3"
 
 [build-dependencies]
 cmake = "0.1"

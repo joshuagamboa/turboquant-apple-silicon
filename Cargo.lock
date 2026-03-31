@@ -209,6 +209,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuinix"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67068facab6ee2aff2c66c3249d064c996435cf8f1a8e61db8675571ca4c01ff"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "turboquant-llama-rs"
 version = "0.1.0"
 dependencies = [
@@ -217,6 +226,7 @@ dependencies = [
  "cmake",
  "libc",
  "thiserror",
+ "tuinix",
 ]
 
 [[package]]

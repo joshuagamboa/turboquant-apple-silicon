@@ -81,6 +81,41 @@ extern "C" {
     pub fn llamatq_print_memory_breakdown(ctx: LlamaTqCtx);
     pub fn llamatq_is_metal_active(ctx: LlamaTqCtx) -> c_int;
     pub fn llamatq_get_api_version() -> c_int;
+
+    // ── API v3: KV cache management ───────────────────────────────────────────
+    pub fn llamatq_kv_clear(ctx: LlamaTqCtx);
+    pub fn llamatq_kv_used(ctx: LlamaTqCtx) -> c_int;
+    pub fn llamatq_kv_shift(ctx: LlamaTqCtx, p0: c_int, p1: c_int);
+
+    // ── API v3: Tokenization ──────────────────────────────────────────────────
+    pub fn llamatq_tokenize(
+        ctx:        LlamaTqCtx,
+        text:       *const c_char,
+        out_tokens: *mut i32,
+        max_tokens: c_int,
+        add_special: c_int,
+    ) -> c_int;
+
+    // ── API v3: Model metadata ────────────────────────────────────────────────
+    pub fn llamatq_model_meta(
+        ctx:      LlamaTqCtx,
+        key:      *const c_char,
+        buf:      *mut c_char,
+        buf_size: c_int,
+    ) -> c_int;
+
+    // ── API v3: Chat evaluation ───────────────────────────────────────────────
+    pub fn llamatq_chat_eval(
+        ctx:           LlamaTqCtx,
+        formatted_turn: *const c_char,
+        max_tokens:    c_int,
+        sparams:       *const LlamaTqSamplingParams,
+        out_stats:     *mut LlamaTqEvalStats,
+        out_text:      *mut c_char,
+        out_text_size: c_int,
+        token_cb:      Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
+        user_data:     *mut c_void,
+    ) -> c_int;
 }
 
 // Stable Rust !Send/!Sync marker (negative impls are unstable)

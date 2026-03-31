@@ -2,7 +2,7 @@
 
 **TurboQuant KV Cache Quantization for llama.cpp on Apple Silicon (Metal/ARM)**
 
-✅ **STATUS: FULLY FUNCTIONAL** — Production inference loop with Metal GPU acceleration, static linking stability, and full LLM observability (TTFT, TPS, token usage, latency).
+✅ **STATUS: FULLY FUNCTIONAL** — Production inference loop with Metal GPU acceleration, multi-turn interactive chat TUI, stateful context-window management, chat template auto-detection, and full LLM observability (TTFT, TPS, token usage, latency).
 
 A production-grade Rust integration that wraps the [TurboQuant fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp, enabling aggressive KV cache compression with minimal quality loss — optimized for Apple Silicon GPUs via Metal compute shaders.
 
@@ -38,17 +38,20 @@ TurboQuant is a **fork-only** set of Metal compute kernels for llama.cpp that qu
 
 ```
 turboquant-apple-silicon/
-├── Cargo.toml                  # Rust package manifest
-├── build.rs                    # CMake + cc build orchestration
+├── Cargo.toml                  # Rust package manifest (incl. tuinix, clap)
+├── build.rs                    # CMake + cc build orchestration (API version gate)
 ├── src/
-│   ├── main.rs                 # CLI entry point + stats display
-│   ├── ffi.rs                  # Hand-written C FFI bindings + LlamaTqEvalStats
-│   ├── context.rs              # Safe Rust wrapper (TurboQuantCtx + InferenceStats)
+│   ├── main.rs                 # CLI entry point — one-shot and --chat mode
+│   ├── ffi.rs                  # Hand-written C FFI bindings (API v3)
+│   ├── context.rs              # Safe Rust wrapper (TurboQuantCtx, InferenceStats)
+│   ├── chat.rs                 # ChatSession — multi-turn state + KV windowing
+│   ├── template.rs             # Chat template engine (ChatML / Llama-3 / Mistral)
+│   ├── tui.rs                  # Interactive TUI (tuinix frame-based rendering)
 │   └── shim/
-│       └── llamatqshim.c       # C shim: inference loop + mach_absolute_time instrumentation
+│       └── llamatqshim.c       # C shim: inference, KV ops, streaming callback
 ├── include/
-│   └── llamatqshim.h           # C shim header (llamatq_eval_stats struct)
-├── llama-cpp-turboquant/       # Fork (submodule or symlink)
+│   └── llamatqshim.h           # C shim header (API v3: 12 functions)
+├── llama-cpp-turboquant/       # Fork (submodule or local clone)
 ├── scripts/
 │   └── ci-smoke-test.sh        # CI smoke test
 ├── models/
@@ -79,10 +82,17 @@ cd ..
 cargo build --release
 ```
 
-### 3. Run
+### 3a. One-shot inference
 
 ```bash
-./target/release/turboquant-llama-rs models/your-model.gguf "Hello, world!" --temp 0.7 --top-p 0.9 --max-tokens 512
+./target/release/turboquant-llama-rs models/your-model.gguf "Hello!" \
+  --temp 0.7 --top-p 0.9 --max-tokens 512
+```
+
+### 3b. Interactive multi-turn chat (TUI)
+
+```bash
+./target/release/turboquant-llama-rs models/your-model.gguf --chat
 ```
 
 ---
@@ -92,20 +102,96 @@ cargo build --release
 | Option | Default | Description |
 |---|---|---|
 | `<model>` | (Required) | Path to the GGUF model file. |
-| `[prompt]`| `"Hello, world!"` | The text prompt to start generation. |
-| `--temp` | `0.0` | Temperature for sampling. `0.0` = greedy decoding. Higher values increase creativity. |
-| `--top-p` | `1.0` | Nucleus sampling. `1.0` = disabled. Lower values (e.g. `0.9`) restrict to top cumulative tokens. |
+| `[prompt]` | `"Hello, world!"` | Prompt for one-shot mode (ignored in `--chat`). |
+| `--chat` | (Flag) | Launch the interactive multi-turn chat TUI. |
+| `--template` | (Auto) | Override chat template: `chatml`, `llama3`, or `mistral`. |
+| `--temp` | `0.0` | Temperature for sampling. `0.0` = greedy. Higher = more creative. |
+| `--top-p` | `1.0` | Nucleus sampling. `1.0` = disabled. |
 | `--seed` | `0` | RNG seed for reproducible generation. |
-| `--max-tokens` | `256` | Maximum tokens to generate before stopping. |
-| `--ctx-size` | `8192` | Total context window size in tokens. Larger values use more KV cache memory. |
+| `--max-tokens` | `512` | Maximum tokens to generate per turn. |
+| `--ctx-size` | `8192` | Total context window size in tokens. |
 | `--batch-size` | `512` | Prompt-processing batch size in tokens. |
-| `--verbose` | (Flag) | Print detailed diagnostics: memory breakdown, TTFT, prompt TPS, and per-phase timing. |
+| `--verbose` | (Flag) | Print detailed diagnostics: memory breakdown, TTFT, per-phase timing. |
+
+---
+
+## Interactive Chat TUI
+
+Launch with `--chat` to enter a frame-based terminal UI:
+
+```
+ TurboQuant Chat │ Qwen3.5-35B-A3B-UD-Q2_K_XL.gguf │ ChatML │ 312/8192 tokens
+─────────────────────────────────────────────────────────────────────────────────
+  You › Who wrote Don Quixote?
+
+   AI › Miguel de Cervantes wrote Don Quixote, published in two parts in 1605
+        and 1615. It is widely regarded as the first modern novel.
+
+─────────────────────────────────────────────────────────────────────────────────
+ ❯ _
+─────────────────────────────────────────────────────────────────────────────────
+ 45.2 tok/s  TTFT 83ms │ Ctrl+C: quit  /reset  /help  /stats  PgUp/Dn: scroll
+```
+
+### TUI Keyboard Controls
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit message / run inference |
+| `Ctrl+C` | Exit chat |
+| `←` / `→` | Move cursor in input |
+| `Home` / `End` | Jump to start / end of input |
+| `Backspace` / `Del` | Delete character |
+| `PgUp` / `PgDn` | Scroll message history |
+
+### TUI Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/reset` | Clear message history and reset KV cache |
+| `/help` | Show available commands |
+| `/stats` | Show last inference statistics (TTFT, TPS, tokens) |
+
+### Streaming
+
+Tokens are streamed live into the TUI as they are generated — each token triggers a differential frame update via the tuinix callback mechanism, giving you real-time output without terminal corruption.
+
+---
+
+## Context Window Management
+
+Long conversations eventually exceed the model's context window. TurboQuant implements a two-strategy windowing system to handle this gracefully:
+
+### Strategy 1 — KV Shift (Primary)
+Uses `llama_memory_seq_rm` + `llama_memory_seq_add` to **evict old tokens in-place** from the KV cache without clearing the rest of the context. This preserves recent conversation turns and is extremely fast (no re-encoding).
+
+### Strategy 2 — Re-process (Fallback)
+If the KV shift cannot reduce usage sufficiently, the session clears the full KV cache and re-encodes the most recent portion of the conversation history. Slower but guarantees a clean state.
+
+The transition is invisible to the user — the chat continues without interruption.
+
+---
+
+## Chat Template Auto-Detection
+
+The template engine reads GGUF metadata keys (`tokenizer.chat_template`, `general.architecture`) to automatically identify and apply the correct chat format:
+
+| Template | Detected From | Format |
+|----------|--------------|--------|
+| **ChatML** | `tokenizer.chat_template` contains `im_start`, or Qwen architecture | `<|im_start|>system…<|im_end|>` |
+| **Llama-3** | Architecture `llama` or template mentions `<|start_header_id|>` | `<|start_header_id|>user<|end_header_id|>…` |
+| **Mistral Instruct** | Architecture `mistral` or template mentions `[INST]` | `[INST] … [/INST]` |
+
+Override with `--template chatml|llama3|mistral` if auto-detection is wrong.
+
+**Default system prompt** (used when none is set by the model):
+> *"You are a helpful, accurate, concise AI assistant. Follow the user's instructions, ask clarifying questions when needed, and avoid making up facts."*
 
 ---
 
 ## Inference Statistics
 
-After every successful run, TurboQuant prints a compact statistics block automatically:
+After every one-shot run, TurboQuant prints a compact statistics block:
 
 ```
 ─── Inference Stats ───────────────────────────────
@@ -127,6 +213,8 @@ Pass `--verbose` for the full breakdown including **Time to First Token (TTFT)**
 ─────────────────────────────────────────────────────
 ```
 
+In `--chat` mode, live stats (TPS + TTFT) are shown in the TUI status bar after each response. Use `/stats` to view them at any time.
+
 ### Metrics Reference
 
 | Metric | Where measured | Description |
@@ -136,22 +224,23 @@ Pass `--verbose` for the full breakdown including **Time to First Token (TTFT)**
 | **Prompt TPS** | C shim | Prompt tokens processed per second |
 | **Generation TPS** | C shim | Output tokens generated per second |
 | **Token Usage** | C shim | Input prompt token count + output completion token count |
+| **Context Used** | KV cache query | Current KV cache occupancy (shown in TUI header) |
 
-All timings use `mach_absolute_time()` — Apple Silicon's nanosecond-resolution monotonic clock — measured directly inside the C inference loop for the highest possible accuracy. TTFT in particular spans from the function entry to the completion of the first generated token's `llama_decode`, capturing the true user-perceived latency.
+All timings use `mach_absolute_time()` — Apple Silicon's nanosecond-resolution monotonic clock — measured directly inside the C inference loop.
 
 ---
 
 ## Model Compatibility
 
-| Model | Status | Notes |
-|-------|--------|-------|
-| TinyLlama 1.1B | ✅ Works | Great for CI/testing |
-| Qwen 3.5 7B | ✅ Works | Good performance test |
-| Qwen 3.5 35B-A3B | ✅ Works | Verified in fork benchmarks |
-| Llama 3.1 8B | ✅ Works | Standard test model |
-| Llama 3.1 70B | ⚠️ Works | Requires `-ngl` tuning, heavy VRAM |
-| Mistral 7B | ✅ Works | Well-tested |
-| Phi-3 Mini | ✅ Works | Lightweight option |
+| Model | Status | Chat Template | Notes |
+|-------|--------|--------------|-------|
+| TinyLlama 1.1B | ✅ Works | ChatML | Great for CI/testing |
+| Qwen 2.5 0.5B / 7B | ✅ Works | ChatML (auto) | Fast, excellent for chat |
+| Qwen 3.5 35B-A3B | ✅ Works | ChatML (auto) | Verified in fork benchmarks |
+| Llama 3.2 1B / 3B | ✅ Works | Llama-3 (auto) | Lightweight instruct models |
+| Llama 3.1 8B | ✅ Works | Llama-3 (auto) | Standard test model |
+| Mistral 7B Instruct | ✅ Works | Mistral (auto) | Well-tested |
+| Phi-3 Mini | ✅ Works | ChatML | Lightweight option |
 
 ---
 
@@ -162,20 +251,23 @@ All timings use `mach_absolute_time()` — Apple Silicon's nanosecond-resolution
 - Contexts must remain on a **single OS thread**
 - Do **not** send contexts across threads or use in async executors without pinning
 - The Rust wrapper enforces `!Send` + `!Sync` via `PhantomData<*mut ()>`
+- In `--chat` mode, inference runs synchronously on the main thread; the token callback redraws the TUI in-place
 
 ---
 
 ## Architecture
 
-This crate uses a **C shim** (`llamatqshim.c`) to bridge Rust FFI with the llama.cpp C++ API. The shim is compiled by the `cc` crate, while the main llama.cpp fork is built via CMake — both orchestrated by `build.rs`.
-
 ```
-Rust (main.rs)
-  → InferenceStats display
+Rust (main.rs / tui.rs)
+  → ChatTui (tuinix TUI, streaming token callback)
+  → ChatSession (message history, KV window management)
+  → Template engine (template.rs — ChatML / Llama-3 / Mistral)
   → Safe wrapper (context.rs / TurboQuantCtx)
-    → FFI bindings (ffi.rs / LlamaTqEvalStats)
+    → FFI bindings (ffi.rs — API v3, 12 C functions)
       → C shim (llamatqshim.c)
-          ├─ mach_absolute_time() instrumentation (TTFT, TPS, latency)
+          ├─ mach_absolute_time() instrumentation
+          ├─ KV cache ops (llama_memory_seq_rm / seq_add)
+          ├─ Streaming token callback (token_cb_fn trampoline)
           └─ llama.cpp TurboQuant fork (C++)
                └─ Metal compute kernels (GPU)
 ```
@@ -184,26 +276,44 @@ Rust (main.rs)
 
 ## Changelog
 
+### [Unreleased] — Multi-Turn Chat TUI (API v3)
+
+Complete multi-turn stateful chat system with interactive TUI, context window management, and chat template auto-detection.
+
+**New features:**
+- **`--chat` mode** — Launches a frame-based terminal UI (via `tuinix`) for interactive multi-turn conversation.
+- **Live token streaming** — Each generated token triggers a differential frame redraw via a C function-pointer callback trampoline; no terminal corruption, no buffering.
+- **Context window management** — Two-strategy KV windowing: primary KV shift (`llama_memory_seq_rm` + `llama_memory_seq_add`) with re-process fallback.
+- **Chat template auto-detection** — Reads GGUF metadata to select ChatML, Llama-3, or Mistral Instruct format automatically. Override with `--template`.
+- **Default system prompt** — Sensible assistant prompt applied when the model does not specify one.
+- **TUI status bar** — Live TPS + TTFT after every response; `/reset`, `/help`, `/stats` slash commands; PgUp/Dn scrollable history.
+- **`--template` CLI flag** — Manual override for chat template selection.
+
+**C shim API v3 additions (6 new functions):**
+- `llamatq_kv_clear` — Full KV cache clear.
+- `llamatq_kv_used` — Query KV cache occupancy via `llama_memory_seq_pos_max`.
+- `llamatq_kv_shift` — Sliding-window eviction via `llama_memory_seq_rm` + `llama_memory_seq_add`.
+- `llamatq_tokenize` — Tokenize a string into a buffer.
+- `llamatq_model_meta` — Read a GGUF metadata key by name.
+- `llamatq_chat_eval` — Non-clearing KV append-and-decode with streaming token callback.
+
+**New Rust modules:**
+- `src/chat.rs` — `ChatSession`, `ChatMessage`, `WindowConfig`, dual windowing strategies.
+- `src/template.rs` — `ChatTemplate` enum with `detect()`, `format_messages()`, system prompt injection.
+- `src/tui.rs` — `ChatTui` struct built on `tuinix`; frame rendering, input handling, scroll, notifications.
+
+**Dependencies added:**
+- `tuinix = "0.3"` — Lightweight Unix TUI library (only `libc` dependency).
+
+---
+
 ### [Unreleased] — LLM Inference Observability
 
-Added standard LLM inference metrics collected entirely inside the C inference loop using `mach_absolute_time()` for nanosecond precision on Apple Silicon. Stats are returned to Rust via a new `llamatq_eval_stats` output struct and displayed after every run.
+Added standard LLM inference metrics collected entirely inside the C inference loop using `mach_absolute_time()` for nanosecond precision. Metrics are returned to Rust via `llamatq_eval_stats` and displayed after every run.
 
-**New metrics:**
-- **Time to First Token (TTFT)** — measures the latency from request start to completion of the first generated token's decode. Critical UX metric for chat applications.
-- **Tokens Per Second (generation TPS)** — output throughput of the generation loop, excluding prompt processing.
-- **Prompt Processing TPS** — throughput of the prompt ingestion phase (often GPU-bound and significantly faster than generation).
-- **Token Usage (prompt / completion / total)** — input and output token counts for cost accounting and context management.
-- **Total Latency** — full wall-clock time from call entry to final token.
+**Metrics added:** TTFT, Tokens Per Second (generation + prompt), Token Usage (prompt / completion / total), Total Latency.
 
-**Implementation details:**
-- `llamatq_eval_stats` struct added to `llamatqshim.h` and mirrored as `LlamaTqEvalStats` (`repr(C)`) in `ffi.rs`.
-- Four `mach_absolute_time()` checkpoints injected into `llamatq_eval_with_sampling` in `llamatqshim.c`: at request start, after prompt decode, after first generated token's decode, and at generation loop exit.
-- `out_stats` parameter is nullable — passing `NULL` (used by the `llamatq_eval` convenience wrapper) incurs zero overhead.
-- `InferenceStats` Rust struct added to `context.rs` with `print_compact()`, `print_verbose()`, and `Display` implementations.
-- `eval_with_sampling()` return type changed from `Result<i32, ...>` to `Result<InferenceStats, ...>`.
-- Error codes from the C shim (`-1`, `-2`, `-3`) now have human-readable descriptions.
-- C shim API version bumped `1 → 2` (reflected in both `build.rs` define and `EXPECTED_API_VERSION` in `context.rs`).
-- Two output modes: compact (always shown) and detailed/verbose (with `--verbose` flag).
+**Implementation:** API bumped `1 → 2`. `mach_absolute_time()` checkpoints at request start, post-prompt-decode, first-token decode, and generation loop exit. Compact and verbose output modes.
 
 ---
 

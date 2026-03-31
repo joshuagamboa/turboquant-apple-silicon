@@ -3,7 +3,8 @@ use crate::ffi::{
     self, LlamaTqCacheType, LlamaTqCtx, LlamaTqEvalStats, LlamaTqParams, LlamaTqSamplingParams,
     NotSendSync,
 };
-use std::ffi::CString;
+use libc::{c_char, c_void};
+use std::ffi::{CStr, CString};
 use std::fmt;
 use std::marker::PhantomData;
 use thiserror::Error;
@@ -163,7 +164,7 @@ pub struct TurboQuantCtx {
 
 impl TurboQuantCtx {
     /// API version must match the C shim version baked in at compile time.
-    const EXPECTED_API_VERSION: i32 = 2;
+    const EXPECTED_API_VERSION: i32 = 3;
 
     /// Create a new TurboQuant context.
     ///
@@ -265,6 +266,152 @@ impl TurboQuantCtx {
 
     pub fn as_raw(&self) -> LlamaTqCtx {
         self.raw
+    }
+
+    // ── API v3: KV cache management ───────────────────────────────────────────
+
+    /// Clear the KV cache. Call before re-processing the full conversation
+    /// history in the Re-process windowing strategy.
+    pub fn kv_clear(&self) {
+        unsafe { ffi::llamatq_kv_clear(self.raw) }
+    }
+
+    /// Return the number of tokens currently stored in the KV cache.
+    pub fn kv_used(&self) -> i32 {
+        unsafe { ffi::llamatq_kv_used(self.raw) }
+    }
+
+    /// Remove KV positions `[p0, p1)` and shift remaining positions down.
+    /// Used by the KV Shift windowing strategy to evict old turns in-place.
+    pub fn kv_shift(&self, p0: i32, p1: i32) {
+        unsafe { ffi::llamatq_kv_shift(self.raw, p0, p1) }
+    }
+
+    // ── API v3: Tokenization ──────────────────────────────────────────────────
+
+    /// Tokenize `text` and return token IDs. Does NOT decode into the KV cache.
+    /// `add_special`: if true, includes BOS/EOS special tokens.
+    pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vec<i32>, TurboQuantError> {
+        let text_c = CString::new(text)?;
+        // Allocate a generous buffer — context size is the absolute max.
+        let mut buf = vec![0i32; 32768];
+        let n = unsafe {
+            ffi::llamatq_tokenize(
+                self.raw,
+                text_c.as_ptr(),
+                buf.as_mut_ptr(),
+                buf.len() as i32,
+                if add_special { 1 } else { 0 },
+            )
+        };
+        if n < 0 {
+            Err(TurboQuantError::EvalFailed(n))
+        } else {
+            buf.truncate(n as usize);
+            Ok(buf)
+        }
+    }
+
+    // ── API v3: Model metadata ────────────────────────────────────────────────
+
+    /// Read a model metadata string value by key.
+    /// Returns `None` if the key is not present in the model.
+    pub fn model_meta(&self, key: &str) -> Option<String> {
+        let key_c = CString::new(key).ok()?;
+        let mut buf = vec![0u8; 8192];
+        let n = unsafe {
+            ffi::llamatq_model_meta(
+                self.raw,
+                key_c.as_ptr(),
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len() as i32,
+            )
+        };
+        if n < 0 {
+            None
+        } else {
+            let cstr = unsafe { CStr::from_ptr(buf.as_ptr() as *const c_char) };
+            Some(cstr.to_string_lossy().into_owned())
+        }
+    }
+
+    // ── API v3: Chat evaluation ───────────────────────────────────────────────
+
+    /// Evaluate a pre-formatted chat turn against the EXISTING KV cache.
+    ///
+    /// Unlike `eval_with_sampling`, this does NOT clear the KV cache, enabling
+    /// multi-turn conversation. The `on_token` callback, if provided, is called
+    /// once per generated token piece for real-time streaming into the TUI.
+    ///
+    /// Returns `(response_text, stats)` on success.
+    ///
+    /// ⚠️ Must be called from the same thread that created the context.
+    pub fn chat_eval<F>(
+        &self,
+        formatted_turn: &str,
+        max_tokens: i32,
+        params: SamplingParams,
+        mut on_token: Option<&mut F>,
+    ) -> Result<(String, InferenceStats), TurboQuantError>
+    where
+        F: FnMut(&str),
+    {
+        let turn_c = CString::new(formatted_turn)?;
+        let c_params: LlamaTqSamplingParams = params.into();
+        let mut raw_stats = LlamaTqEvalStats::default();
+        // 64 KB output buffer — enough for any reasonable response.
+        let mut out_text = vec![0u8; 65536];
+
+        // Build a fat-pointer trampoline so the C callback can call our Rust closure.
+        // We use a *mut c_void pointing at the Option<&mut F> on this stack frame.
+        struct CallbackState<'a, F: FnMut(&str)>(
+            &'a mut Option<&'a mut F>,
+        );
+
+        // SAFETY: The C shim calls token_cb synchronously during chat_eval;
+        //         it never stores the pointer or calls it after returning.
+        unsafe extern "C" fn trampoline<F: FnMut(&str)>(
+            piece: *const c_char,
+            user_data: *mut c_void,
+        ) {
+            let cb_opt = &mut *(user_data as *mut Option<&mut F>);
+            if let Some(cb) = cb_opt.as_mut() {
+                if let Ok(s) = CStr::from_ptr(piece).to_str() {
+                    cb(s);
+                }
+            }
+        }
+
+        let (cb_fn, user_data_ptr) = if on_token.is_some() {
+            let ptr = &mut on_token as *mut Option<&mut F> as *mut c_void;
+            (Some(trampoline::<F> as unsafe extern "C" fn(*const c_char, *mut c_void)), ptr)
+        } else {
+            (None, std::ptr::null_mut::<c_void>())
+        };
+
+        let result = unsafe {
+            ffi::llamatq_chat_eval(
+                self.raw,
+                turn_c.as_ptr(),
+                max_tokens,
+                &c_params,
+                &mut raw_stats,
+                out_text.as_mut_ptr() as *mut c_char,
+                out_text.len() as i32,
+                cb_fn,
+                user_data_ptr,
+            )
+        };
+
+        if result < 0 {
+            Err(TurboQuantError::EvalFailed(result))
+        } else {
+            // Trim the out_text buffer to the null terminator.
+            let len = out_text.iter().position(|&b| b == 0).unwrap_or(out_text.len());
+            out_text.truncate(len);
+            let response = String::from_utf8_lossy(&out_text).into_owned();
+            Ok((response, InferenceStats::from(raw_stats)))
+        }
     }
 }
 

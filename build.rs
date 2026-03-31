@@ -119,7 +119,7 @@ fn build_shim(llama_path: &str) {
         .include(format!("{}/ggml/include", llama_path))
         .include("include")
         // FIX #1: Pass API version via compiler flag (not header macro)
-        .define("LLAMA_TURBOQUANT_API_VERSION", "2")
+        .define("LLAMA_TURBOQUANT_API_VERSION", "3")
         .flag("-std=c11")
         .flag("-O3")
         .compile("llamatqshim");

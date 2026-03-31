@@ -1,4 +1,4 @@
-// include/llamatqshim.h
+// include/llamatqshim.h  — API v3
 #ifndef LLAMA_TQ_SHIM_H
 #define LLAMA_TQ_SHIM_H
 
@@ -120,6 +120,98 @@ int llamatq_is_metal_active(llamatq_ctx ctx);
  * @return API version number
  */
 int llamatq_get_api_version(void);
+
+// ─── v3 API additions ─────────────────────────────────────────────────────────
+
+/**
+ * Token callback: called once per generated token with the token text.
+ * @param token_text  Null-terminated UTF-8 string for this token piece.
+ * @param user_data   Opaque pointer passed through from the caller.
+ */
+typedef void (*llamatq_token_callback)(const char* token_text, void* user_data);
+
+/**
+ * Clear the KV cache (all sequences).
+ */
+void llamatq_kv_clear(llamatq_ctx ctx);
+
+/**
+ * Get the number of tokens currently occupying the KV cache.
+ * @return Token count, or 0 on error.
+ */
+int llamatq_kv_used(llamatq_ctx ctx);
+
+/**
+ * Remove KV positions [p0, p1) from sequence 0 and shift remaining
+ * positions down by (p1 - p0). Used for sliding-window context management.
+ * @param p0  Start of range to remove (inclusive).
+ * @param p1  End of range to remove (exclusive). -1 = end of sequence.
+ */
+void llamatq_kv_shift(llamatq_ctx ctx, int p0, int p1);
+
+/**
+ * Tokenize text without decoding into the KV cache.
+ * @param text        Input text.
+ * @param out_tokens  Output buffer for token IDs.
+ * @param max_tokens  Capacity of out_tokens.
+ * @param add_special If non-zero, add BOS/EOS special tokens.
+ * @return Number of tokens written, or negative on error.
+ */
+int llamatq_tokenize(
+    llamatq_ctx ctx,
+    const char* text,
+    int32_t* out_tokens,
+    int max_tokens,
+    int add_special
+);
+
+/**
+ * Read a model metadata string value by key.
+ * @param key       Metadata key (e.g. "tokenizer.chat_template").
+ * @param buf       Output buffer.
+ * @param buf_size  Size of buf.
+ * @return Number of bytes written (excluding null), or negative if not found.
+ */
+int llamatq_model_meta(
+    llamatq_ctx ctx,
+    const char* key,
+    char* buf,
+    int buf_size
+);
+
+/**
+ * Chat evaluation: tokenise + decode into the EXISTING KV cache (no clear),
+ * then generate until EOS or max_tokens. Unlike llamatq_eval_with_sampling,
+ * this function does NOT reset the KV cache, enabling multi-turn conversations.
+ *
+ * Generated text is accumulated in out_text. If token_cb is non-NULL it is
+ * called for each token as it is produced (real-time streaming).
+ *
+ * @param ctx            Context from llamatq_create.
+ * @param formatted_turn Pre-formatted chat turn text (role tags + content).
+ * @param max_tokens     Maximum tokens to generate.
+ * @param sparams        Sampling parameters.
+ * @param out_stats      Output stats (nullable).
+ * @param out_text       Output buffer for generated text (nullable).
+ * @param out_text_size  Size of out_text buffer.
+ * @param token_cb       Per-token callback (nullable — disables streaming).
+ * @param user_data      Opaque pointer forwarded to token_cb.
+ * @return Number of tokens generated, or negative on error:
+ *         -1  general failure
+ *         -2  tokenisation error
+ *         -3  prompt decode error
+ */
+int llamatq_chat_eval(
+    llamatq_ctx ctx,
+    const char* formatted_turn,
+    int max_tokens,
+    const llamatq_sampling_params* sparams,
+    llamatq_eval_stats* out_stats,
+    char* out_text,
+    int out_text_size,
+    llamatq_token_callback token_cb,
+    void* user_data
+);
 
 #ifdef __cplusplus
 }
