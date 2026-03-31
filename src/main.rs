@@ -40,7 +40,7 @@ struct Args {
     #[arg(long, default_value_t = 512)]
     batch_size: u32,
 
-    /// Print detailed memory breakdown diagnostics
+    /// Print detailed diagnostics: memory breakdown + full inference stats (TTFT, prompt TPS, etc.)
     #[arg(long, default_value_t = false)]
     verbose: bool,
 }
@@ -48,6 +48,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
+    // ── Context creation ──────────────────────────────────────────────────────
     let ctx = match TurboQuantCtx::new(
         &args.model,
         99,
@@ -55,44 +56,57 @@ fn main() {
         args.ctx_size,
         args.batch_size,
     ) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("Failed to create context: {}", e);
+        Ok(ctx)  => ctx,
+        Err(e)   => {
+            eprintln!("✗ Failed to create context: {}", e);
             std::process::exit(1);
         }
     };
 
+    // ── Backend check ─────────────────────────────────────────────────────────
+    match ctx.verify_metal() {
+        Ok(())  => println!("✓ Metal backend active"),
+        Err(e) => {
+            eprintln!("⚠️  Warning: {}", e);
+            eprintln!("   Ensure GGML_METAL=ON and running on Apple Silicon");
+        }
+    }
+
+    // ── Verbose pre-run diagnostics ───────────────────────────────────────────
     if args.verbose {
+        let kv_size = ctx.kv_cache_size();
+        println!(
+            "KV Cache Size: {} bytes ({:.2} MB)",
+            kv_size,
+            kv_size as f64 / 1024.0 / 1024.0
+        );
+        println!("API Version:   {}", unsafe { ffi::llamatq_get_api_version() });
         println!("=== Memory Breakdown ===");
         ctx.print_memory_breakdown();
         println!("========================");
     }
 
-    match ctx.verify_metal() {
-        Ok(()) => println!("✓ Metal backend active"),
-        Err(e) => {
-            eprintln!("⚠️ Warning: {}", e);
-            eprintln!("   Ensure GGML_METAL=ON and running on Apple Silicon");
-        }
-    }
-
-    let kv_size = ctx.kv_cache_size();
-    println!("KV Cache Size: {} bytes ({:.2} MB)", kv_size, kv_size as f64 / 1024.0 / 1024.0);
-    println!("API Version: {}", unsafe { ffi::llamatq_get_api_version() });
-
+    // ── Inference ─────────────────────────────────────────────────────────────
     let sparams = SamplingParams {
         temperature: args.temp,
-        top_p: args.top_p,
-        seed: args.seed,
+        top_p:       args.top_p,
+        seed:        args.seed,
     };
 
-    match ctx.eval_with_sampling(&args.prompt, args.max_tokens, sparams) {
-        Ok(tokens) => {
-            println!("\nGenerated {} tokens", tokens);
-        }
-        Err(e) => {
-            eprintln!("Evaluation failed: {}", e);
+    let stats = match ctx.eval_with_sampling(&args.prompt, args.max_tokens, sparams) {
+        Ok(stats) => stats,
+        Err(e)    => {
+            eprintln!("✗ Inference error: {}", e);
             std::process::exit(1);
         }
+    };
+
+    // ── Stats output ──────────────────────────────────────────────────────────
+    if args.verbose {
+        // Full detail: TTFT, prompt processing speed, per-phase timing.
+        stats.print_verbose();
+    } else {
+        // Always-on compact summary: latency, token counts, generation TPS.
+        stats.print_compact();
     }
 }

@@ -2,9 +2,9 @@
 
 **TurboQuant KV Cache Quantization for llama.cpp on Apple Silicon (Metal/ARM)**
 
-✅ **STATUS: FULLY FUNCTIONAL** — Core inference loop implemented with Metal GPU acceleration and static linking stability.
+✅ **STATUS: FULLY FUNCTIONAL** — Production inference loop with Metal GPU acceleration, static linking stability, and full LLM observability (TTFT, TPS, token usage, latency).
 
-A production-grade Rust integration template that wraps the [TurboQuant fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp, enabling aggressive KV cache compression with minimal quality loss — optimized for Apple Silicon GPUs via Metal compute shaders.
+A production-grade Rust integration that wraps the [TurboQuant fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp, enabling aggressive KV cache compression with minimal quality loss — optimized for Apple Silicon GPUs via Metal compute shaders.
 
 ---
 
@@ -41,13 +41,13 @@ turboquant-apple-silicon/
 ├── Cargo.toml                  # Rust package manifest
 ├── build.rs                    # CMake + cc build orchestration
 ├── src/
-│   ├── main.rs                 # CLI entry point
-│   ├── ffi.rs                  # Hand-written C FFI bindings
-│   ├── context.rs              # Safe Rust wrapper (TurboQuantCtx)
+│   ├── main.rs                 # CLI entry point + stats display
+│   ├── ffi.rs                  # Hand-written C FFI bindings + LlamaTqEvalStats
+│   ├── context.rs              # Safe Rust wrapper (TurboQuantCtx + InferenceStats)
 │   └── shim/
-│       └── llamatqshim.c       # C shim bridging Rust ↔ llama.cpp
+│       └── llamatqshim.c       # C shim: inference loop + mach_absolute_time instrumentation
 ├── include/
-│   └── llamatqshim.h           # C shim header
+│   └── llamatqshim.h           # C shim header (llamatq_eval_stats struct)
 ├── llama-cpp-turboquant/       # Fork (submodule or symlink)
 ├── scripts/
 │   └── ci-smoke-test.sh        # CI smoke test
@@ -89,20 +89,57 @@ cargo build --release
 
 ## CLI Options
 
-The wrapper provides several options to control text generation and diagnostics:
-
 | Option | Default | Description |
 |---|---|---|
 | `<model>` | (Required) | Path to the GGUF model file. |
 | `[prompt]`| `"Hello, world!"` | The text prompt to start generation. |
-| `--temp` | `0.0` | Temperature for sampling. `0.0` means greedy decoding (most likely token). Higher values (> 0) increase stochasticity/creativity. |
-| `--top-p` | `1.0` | Nucleus sampling. `1.0` means disabled. Low values (e.g. `0.9`) restrict sampling to the most probable cumulative tokens. |
+| `--temp` | `0.0` | Temperature for sampling. `0.0` = greedy decoding. Higher values increase creativity. |
+| `--top-p` | `1.0` | Nucleus sampling. `1.0` = disabled. Lower values (e.g. `0.9`) restrict to top cumulative tokens. |
 | `--seed` | `0` | RNG seed for reproducible generation. |
-| `--max-tokens` | `256` | Maximum number of tokens to generate before stopping. |
-| `--ctx-size` | `8192` | Total model context size to allocate, in tokens. Larger values consume more KV cache memory. |
-| `--batch-size` | `512` | Block size for processing the prompt tokens during generation. |
-| `--verbose` | (Flag) | Print a detailed breakdown of memory usage per device before generation starts. |
+| `--max-tokens` | `256` | Maximum tokens to generate before stopping. |
+| `--ctx-size` | `8192` | Total context window size in tokens. Larger values use more KV cache memory. |
+| `--batch-size` | `512` | Prompt-processing batch size in tokens. |
+| `--verbose` | (Flag) | Print detailed diagnostics: memory breakdown, TTFT, prompt TPS, and per-phase timing. |
 
+---
+
+## Inference Statistics
+
+After every successful run, TurboQuant prints a compact statistics block automatically:
+
+```
+─── Inference Stats ───────────────────────────────
+  Latency:       1234.5 ms
+  Tokens:        128 prompt → 256 generated  (384 total)
+  Speed:         45.2 tok/s  (generation)
+────────────────────────────────────────────────────
+```
+
+Pass `--verbose` for the full breakdown including **Time to First Token (TTFT)** and per-phase throughput:
+
+```
+─── Inference Stats (detailed) ─────────────────────
+  Time to First Token:   89.3 ms
+  Prompt Processing:     85.1 ms  (1504.7 tok/s, 128 tokens)
+  Generation:            1149.4 ms  (45.2 tok/s, 256 tokens)
+  Total Latency:         1234.5 ms
+  Total Tokens:          384
+─────────────────────────────────────────────────────
+```
+
+### Metrics Reference
+
+| Metric | Where measured | Description |
+|---|---|---|
+| **TTFT** | C shim (`mach_absolute_time`) | Time from request start to end of first-token decode |
+| **Latency** | C shim | Total wall-clock time (prompt processing + generation) |
+| **Prompt TPS** | C shim | Prompt tokens processed per second |
+| **Generation TPS** | C shim | Output tokens generated per second |
+| **Token Usage** | C shim | Input prompt token count + output completion token count |
+
+All timings use `mach_absolute_time()` — Apple Silicon's nanosecond-resolution monotonic clock — measured directly inside the C inference loop for the highest possible accuracy. TTFT in particular spans from the function entry to the completion of the first generated token's `llama_decode`, capturing the true user-perceived latency.
+
+---
 
 ## Model Compatibility
 
@@ -134,12 +171,39 @@ This crate uses a **C shim** (`llamatqshim.c`) to bridge Rust FFI with the llama
 
 ```
 Rust (main.rs)
-  → Safe wrapper (context.rs)
-    → FFI bindings (ffi.rs)
+  → InferenceStats display
+  → Safe wrapper (context.rs / TurboQuantCtx)
+    → FFI bindings (ffi.rs / LlamaTqEvalStats)
       → C shim (llamatqshim.c)
-        → llama.cpp TurboQuant fork (C++)
-          → Metal compute kernels (GPU)
+          ├─ mach_absolute_time() instrumentation (TTFT, TPS, latency)
+          └─ llama.cpp TurboQuant fork (C++)
+               └─ Metal compute kernels (GPU)
 ```
+
+---
+
+## Changelog
+
+### [Unreleased] — LLM Inference Observability
+
+Added standard LLM inference metrics collected entirely inside the C inference loop using `mach_absolute_time()` for nanosecond precision on Apple Silicon. Stats are returned to Rust via a new `llamatq_eval_stats` output struct and displayed after every run.
+
+**New metrics:**
+- **Time to First Token (TTFT)** — measures the latency from request start to completion of the first generated token's decode. Critical UX metric for chat applications.
+- **Tokens Per Second (generation TPS)** — output throughput of the generation loop, excluding prompt processing.
+- **Prompt Processing TPS** — throughput of the prompt ingestion phase (often GPU-bound and significantly faster than generation).
+- **Token Usage (prompt / completion / total)** — input and output token counts for cost accounting and context management.
+- **Total Latency** — full wall-clock time from call entry to final token.
+
+**Implementation details:**
+- `llamatq_eval_stats` struct added to `llamatqshim.h` and mirrored as `LlamaTqEvalStats` (`repr(C)`) in `ffi.rs`.
+- Four `mach_absolute_time()` checkpoints injected into `llamatq_eval_with_sampling` in `llamatqshim.c`: at request start, after prompt decode, after first generated token's decode, and at generation loop exit.
+- `out_stats` parameter is nullable — passing `NULL` (used by the `llamatq_eval` convenience wrapper) incurs zero overhead.
+- `InferenceStats` Rust struct added to `context.rs` with `print_compact()`, `print_verbose()`, and `Display` implementations.
+- `eval_with_sampling()` return type changed from `Result<i32, ...>` to `Result<InferenceStats, ...>`.
+- Error codes from the C shim (`-1`, `-2`, `-3`) now have human-readable descriptions.
+- C shim API version bumped `1 → 2` (reflected in both `build.rs` define and `EXPECTED_API_VERSION` in `context.rs`).
+- Two output modes: compact (always shown) and detailed/verbose (with `--verbose` flag).
 
 ---
 

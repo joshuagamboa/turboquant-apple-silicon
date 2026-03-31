@@ -33,20 +33,28 @@ typedef struct {
 } llamatq_params;
 
 /**
+ * Inference statistics collected during a single eval call.
+ * All times are in milliseconds.
+ * Pass a pointer to this struct as the last arg of llamatq_eval_with_sampling;
+ * pass NULL to skip collection.
+ */
+typedef struct {
+    double ttft_ms;           // Time to First Token: request start → first generated token (ms)
+    double prompt_ms;         // Prompt processing time (ms)
+    double generation_ms;     // Token generation time, excluding prompt (ms)
+    double total_ms;          // Total wall-clock latency: request start → last token (ms)
+    int    prompt_tokens;     // Number of input (prompt) tokens
+    int    completion_tokens; // Number of output (generated) tokens
+    double prompt_tps;        // Prompt processing throughput (tokens/sec)
+    double generation_tps;    // Generation throughput (tokens/sec)
+} llamatq_eval_stats;
+
+/**
  * Create context with TurboQuant KV cache
  * @param params Context parameters
  * @return Context pointer or NULL on failure
  */
 llamatq_ctx llamatq_create(const llamatq_params* params);
-
-/**
- * Evaluate prompt and return token count (using default greedy sampling)
- * @param ctx Context from llamatq_create
- * @param prompt Input text
- * @param max_tokens Maximum tokens to generate
- * @return Number of tokens generated, or -1 on error
- */
-int llamatq_eval(llamatq_ctx ctx, const char* prompt, int max_tokens);
 
 typedef struct {
     float temperature;   // 0.0 = greedy, > 0 = stochastic
@@ -55,19 +63,36 @@ typedef struct {
 } llamatq_sampling_params;
 
 /**
- * Evaluate prompt using specific sampling parameters
+ * Evaluate prompt using specific sampling parameters.
+ * Timing statistics are written to out_stats if non-NULL.
+ *
+ * @param ctx       Context from llamatq_create
+ * @param prompt    Input text
+ * @param max_tokens Maximum tokens to generate
+ * @param sparams   Sampling parameters (temperature, top_p, seed)
+ * @param out_stats Output stats struct (nullable — pass NULL to skip)
+ * @return Number of tokens generated, or negative value on error:
+ *         -1  general failure
+ *         -2  tokenization error
+ *         -3  prompt decode error
+ */
+int llamatq_eval_with_sampling(
+    llamatq_ctx ctx,
+    const char* prompt,
+    int max_tokens,
+    const llamatq_sampling_params* sparams,
+    llamatq_eval_stats* out_stats
+);
+
+/**
+ * Evaluate prompt and return token count (using default greedy sampling).
+ * Convenience wrapper; stats are not collected.
  * @param ctx Context from llamatq_create
  * @param prompt Input text
  * @param max_tokens Maximum tokens to generate
- * @param sparams Sampling parameters (temperature, top_p, seed)
- * @return Number of tokens generated, or -1 on error
+ * @return Number of tokens generated, or negative on error
  */
-int llamatq_eval_with_sampling(
-    llamatq_ctx ctx, 
-    const char* prompt, 
-    int max_tokens, 
-    const llamatq_sampling_params* sparams
-);
+int llamatq_eval(llamatq_ctx ctx, const char* prompt, int max_tokens);
 
 /**
  * Free context and release resources
