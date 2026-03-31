@@ -63,7 +63,9 @@ int llamatq_eval_with_sampling(llamatq_ctx ctx_ptr, const char* prompt, int max_
     if (!ctx || !prompt || !sparams) return -1;
     
     // 1. Tokenize input
-    int max_prompt_tokens = 2048;
+    int max_prompt_tokens = llama_n_ctx(ctx->ctx);
+    if (max_prompt_tokens <= 0) max_prompt_tokens = 2048; // Fallback
+    
     int32_t* tokens = (int32_t*)malloc(max_prompt_tokens * sizeof(int32_t));
     if (!tokens) return -1;
     
@@ -97,6 +99,11 @@ int llamatq_eval_with_sampling(llamatq_ctx ctx_ptr, const char* prompt, int max_
     int generated_tokens = 0;
     
     for (int i = 0; i < max_tokens; i++) {
+        if (n_tokens + generated_tokens >= max_prompt_tokens) {
+            fprintf(stderr, "\n[Warning: Context size limit of %d tokens reached. Generation stopped early.]\n", max_prompt_tokens);
+            break;
+        }
+
         // Sample next token
         llama_token new_token = llama_sampler_sample(smpl, ctx->ctx, -1);
         

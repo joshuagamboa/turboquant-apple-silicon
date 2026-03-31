@@ -32,6 +32,14 @@ struct Args {
     #[arg(long, default_value_t = 256)]
     max_tokens: i32,
 
+    /// Context size (number of tokens)
+    #[arg(long, default_value_t = 8192)]
+    ctx_size: u32,
+
+    /// Batch size for prompt processing
+    #[arg(long, default_value_t = 512)]
+    batch_size: u32,
+
     /// Print detailed memory breakdown diagnostics
     #[arg(long, default_value_t = false)]
     verbose: bool,
@@ -44,8 +52,8 @@ fn main() {
         &args.model,
         99,
         LlamaTqCacheType::Turbo3,
-        2048,
-        512,
+        args.ctx_size,
+        args.batch_size,
     ) {
         Ok(ctx) => ctx,
         Err(e) => {

@@ -99,6 +99,8 @@ The wrapper provides several options to control text generation and diagnostics:
 | `--top-p` | `1.0` | Nucleus sampling. `1.0` means disabled. Low values (e.g. `0.9`) restrict sampling to the most probable cumulative tokens. |
 | `--seed` | `0` | RNG seed for reproducible generation. |
 | `--max-tokens` | `256` | Maximum number of tokens to generate before stopping. |
+| `--ctx-size` | `8192` | Total model context size to allocate, in tokens. Larger values consume more KV cache memory. |
+| `--batch-size` | `512` | Block size for processing the prompt tokens during generation. |
 | `--verbose` | (Flag) | Print a detailed breakdown of memory usage per device before generation starts. |
 
 
