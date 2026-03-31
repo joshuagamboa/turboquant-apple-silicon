@@ -1,224 +1,146 @@
 # turboquant-apple-silicon
 
-**TurboQuant KV Cache Quantization for llama.cpp on Apple Silicon (Metal/ARM)**
+**High-Performance Rust Integration for KV Cache Quantized LLM Inference on Apple Silicon**
 
-✅ **STATUS: FULLY FUNCTIONAL** — Production inference loop with Metal GPU acceleration, multi-turn interactive chat TUI, stateful context-window management, chat template auto-detection, and full LLM observability (TTFT, TPS, token usage, latency).
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Platform: macOS](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](https://developer.apple.com/apple-silicon/)
+[![Status: Functional](https://img.shields.io/badge/Status-Fully%20Functional-brightgreen.svg)]()
 
-A production-grade Rust integration that wraps the [TurboQuant fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp, enabling aggressive KV cache compression with minimal quality loss — optimized for Apple Silicon GPUs via Metal compute shaders.
-
----
-
-## What Is TurboQuant?
-
-TurboQuant is a **fork-only** set of Metal compute kernels for llama.cpp that quantises the KV cache at inference time. This dramatically reduces VRAM usage, allowing larger models and longer context windows to fit on Apple Silicon machines.
-
-| Metric | FP16 KV (Baseline) | turbo3 | turbo2 |
-|--------|---------------------|--------|--------|
-| **Compression vs FP16** | 1.0× | ~4.6× | ~6.4× |
-| **Memory Reduction** | — | ~78% | ~84% |
-| **Decode Speed (M5 Max)** | Reference | ~100% | ~95% |
-
-> **⚠️ TurboQuant is NOT in upstream llama.cpp.** You must use the [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) fork.
+`turboquant-apple-silicon` is a production-grade Rust integration that brings **aggressive KV cache quantization** to Apple Silicon GPUs (M1/M2/M3/M4/M5). By wrapping a specialized fork of `llama.cpp`, this project enables significantly reduced memory footprints for large models and long-context windows without sacrificing the power of Metal acceleration.
 
 ---
 
-## System Requirements
+## 🚀 What makes this project unique?
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| **macOS** | 13.0+ (Ventura) | 15.0+ (Sequoia) |
-| **Xcode** | 15.0+ | 16.2+ |
-| **Rust** | 1.83+ (stable) | Latest stable |
-| **CMake** | 3.28+ | Latest |
-| **Architecture** | Apple Silicon (aarch64) | M3/M4/M5 |
+This integration bridges the gap between low-level C++ performance and high-level Rust safety and ergonomics. It features:
 
----
-
-## Project Structure
-
-```
-turboquant-apple-silicon/
-├── Cargo.toml                  # Rust package manifest (incl. tuinix, clap)
-├── build.rs                    # CMake + cc build orchestration (API version gate)
-├── src/
-│   ├── main.rs                 # CLI entry point — one-shot and --chat mode
-│   ├── ffi.rs                  # Hand-written C FFI bindings (API v3)
-│   ├── context.rs              # Safe Rust wrapper (TurboQuantCtx, InferenceStats)
-│   ├── chat.rs                 # ChatSession — multi-turn state + KV windowing
-│   ├── template.rs             # Chat template engine (ChatML / Llama-3 / Mistral)
-│   ├── tui.rs                  # Interactive TUI (tuinix frame-based rendering)
-│   └── shim/
-│       └── llamatqshim.c       # C shim: inference, KV ops, streaming callback
-├── include/
-│   └── llamatqshim.h           # C shim header (API v3: 12 functions)
-├── llama-cpp-turboquant/       # Fork (submodule or local clone)
-├── scripts/
-│   └── ci-smoke-test.sh        # CI smoke test
-├── models/
-│   └── .gitkeep                # GGUF models go here (gitignored)
-└── README.md
-```
+*   **⚡ Metal-Optimized Kernels**: Direct GPU acceleration for quantized KV cache operations.
+*   **📉 Massive Memory Savings**: Up to **6.4× compression** of the KV cache using `turbo2` and `turbo3` quantization levels.
+*   **💬 Interactive TUI**: A sleek, terminal-based chat interface with "thinking mode" styling and trackpad support.
+*   **🧠 Smart Context Management**: Sophisticated **KV Shift** strategy that preserves the system prompt while sliding the conversation window.
+*   **🔍 Full Observability**: Real-time metrics for Time-to-First-Token (TTFT), Tokens Per Second (TPS), and memory allocation.
 
 ---
 
-## Quick Start
+## 🏗️ Open Source Foundations
 
-### 1. Clone the TurboQuant fork (into the project root)
+This project stands on the shoulders of giants:
+
+1.  **[llama.cpp](https://github.com/ggerganov/llama.cpp)**: The industry-standard implementation for efficient LLM inference.
+2.  **[TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant)**: A specialized fork providing the **TurboQuant** Metal compute kernels for KV cache quantization.
+3.  **[tuinix](https://github.com/jpg/tuinix)**: The frame-based TUI engine used for the interactive chat interface.
+
+---
+
+## 🛠️ Installation & Setup
+
+### Prerequisites
+
+*   **macOS**: 13.0 (Ventura) or newer.
+*   **Apple Silicon**: M-series chip (M1, M2, M3, M4, etc.).
+*   **Tools**: Latest stable **Rust**, **CMake** (3.28+), and **Xcode Command Line Tools**.
+
+### 1. Clone & Prepare the Submodule
+
+The TurboQuant fork is required and should be cloned into the project root.
 
 ```bash
+git clone https://github.com/jpg/turboquant-apple-silicon.git
 cd turboquant-apple-silicon
+
+# Clone the required llama-cpp-turboquant fork
 git clone https://github.com/TheTom/llama-cpp-turboquant
 cd llama-cpp-turboquant
-git checkout 9c600bcd4   # Pinned stable commit
+git checkout 9c600bcd4   # Pinned stable commit for this integration
 cd ..
 ```
 
-> [!NOTE]
-> The fork is gitignored. If you keep it elsewhere, set `LLAMA_TURBOQUANT_PATH` to its location.
+### 2. Build the Project
 
-### 2. Build
+The build system automatically handles the CMake configuration and **statically links** the `llama.cpp` internals to ensure a portable, single-binary output.
 
 ```bash
 cargo build --release
 ```
 
-### 3a. One-shot inference
+### 3. Model Management
+
+This project uses standard `.gguf` model files. You should place your models in the `models/` directory (created automatically or manually).
 
 ```bash
-./target/release/turboquant-llama-rs models/your-model.gguf "Hello!" \
-  --temp 0.7 --top-p 0.9 --max-tokens 4096
-```
-
-### 3b. Interactive multi-turn chat (TUI)
-
-```bash
-./target/release/turboquant-llama-rs models/your-model.gguf --chat
+mkdir -p models
+# Download your favorite model (e.g., Llama-3, Qwen, Mistral) into models/
 ```
 
 ---
 
-## CLI Options
+## 📖 Usage Guide
 
-| Option | Default | Description |
+The binary `turboquant-llama-rs` supports two primary modes: **One-shot CLI** and **Interactive TUI Chat**.
+
+### A. CLI Mode (One-Shot Inference)
+Best for scripts, automated tests, or single-prompt queries.
+
+```bash
+./target/release/turboquant-llama-rs models/llama-3-8b.gguf "Why is the sky blue?" \
+  --temp 0.7 \
+  --top-p 0.9 \
+  --max-tokens 512
+```
+
+### B. Interactive TUI Mode (Multi-turn Chat)
+Enter a high-performance terminal UI designed for multi-turn conversations.
+
+```bash
+./target/release/turboquant-llama-rs models/llama-3-8b.gguf --chat
+```
+
+**TUI Controls:**
+*   **`Enter`**: Submit message.
+*   **`Ctrl+C`**: Quit.
+*   **`PgUp` / `PgDn`**: Scroll chat history.
+*   **Trackpad**: Native two-finger scrolling supported.
+*   **`/reset`**: Clear the current conversation context.
+
+---
+
+## ⚙️ Configuration Flags
+
+| Flag | Default | Description |
 |---|---|---|
-| `<model>` | (Required) | Path to the GGUF model file. |
-| `[prompt]` | `"Hello, world!"` | Prompt for one-shot mode (ignored in `--chat`). |
-| `--chat` | (Flag) | Launch the interactive multi-turn chat TUI. |
-| `--template` | (Auto) | Override chat template: `chatml`, `llama3`, or `mistral`. |
-| `--temp` | `0.0` | Temperature for sampling. `0.0` = greedy. Higher = more creative. |
-| `--top-p` | `1.0` | Nucleus sampling. `1.0` = disabled. |
-| `--seed` | `0` | RNG seed for reproducible generation. |
-| `--max-tokens` | `4096` | Maximum tokens to generate per turn (raised for long responses). |
+| `<model_path>` | (Required) | Path to your GGUF model file. |
+| `--chat` | `false` | Enable the interactive TUI mode. |
 | `--ctx-size` | `8192` | Total context window size in tokens. |
-| `--batch-size` | `512` | Prompt-processing batch size in tokens. |
-| `--verbose` | (Flag) | Print detailed diagnostics: memory breakdown, TTFT, per-phase timing. |
+| `--temp` | `0.0` | Sampling temperature (0.0 = greedy). |
+| `--top-p` | `1.0` | Nucleus sampling (1.0 = disabled). |
+| `--seed` | `0` | RNG seed for deterministic outputs. |
+| `--max-tokens` | `4096` | Max tokens to generate per response. |
+| `--verbose` | `false` | Print detailed memory diagnostics and timing data. |
+| `--template` | (Auto) | Override chat template (`chatml`, `llama3`, `mistral`). |
 
 ---
 
-## Interactive Chat TUI
+## 🧩 Advanced Features
 
-Launch with `--chat` to enter a high-performance terminal UI:
+### Chat Template Auto-Detection
+The engine automatically identifies the correct prompt format (ChatML, Llama-3, Mistral) by inspecting GGUF metadata. You rarely need to specify this manually unless using a non-standard fine-tune.
 
-```
- 󱚣 TurboQuant Chat │ Qwen3.5-35B-A3B-UD-Q2_K_XL.gguf │ ChatML │ 312/8192 tokens
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  You › Who wrote Don Quixote?
+### KV Shift Windowing
+To handle long conversations, TurboQuant implements a **KV Shift** strategy. Unlike simple circular buffers, it **pins the System Prompt** at the beginning of the context and only shifts the conversational "middle ground." This ensures the model never "forgets" its core instructions.
 
-   AI › <think>
-        The user is asking about the authorship of Don Quixote.
-        </think>
-        Miguel de Cervantes wrote Don Quixote, published in two parts in 1605
-        and 1615. It is widely regarded as the first modern novel.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ❯ _
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- 45.2 tok/s  TTFT 83ms │ Ctrl+C: quit  |  /reset  |  /help  |  PgUp/Dn: scroll
-```
-
-### Modern Features
-- **Vibrant UI:** Refreshed color palette with high-contrast text and sleek separators.
-- **Thinking Mode:** Internal model reasoning (between `<think>` tags) is styled in dimmed italics for better visual separation.
-- **Advanced Trackpad Support:** Native two-finger scrolling optimized for MacBook Pro (SGR 1006 + Motion 1002 modes).
-- **Sticky-Bottom Auto-scroll:** Viewport intelligently follows new tokens during streaming but allows you to scroll up manually without being "yanked" back.
-
-### TUI Navigation
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Submit message / run inference |
-| `Ctrl+C` | Exit chat |
-| `←` / `→` | Move cursor in input |
-| `Ctrl+U` / `Ctrl+B` | Scroll Up (MacBook friendly) |
-| `Ctrl+D` / `Ctrl+F` | Scroll Down (MacBook friendly) |
-| `PgUp` / `PgDn` | Scroll history |
-| `Home` / `End` | Jump to start / end of input |
-| `Backspace` / `Del` | Delete character |
+### Thinking Mode Styling
+Models with internal reasoning (like DeepSeek or R1) often output `<think>...</think>` tags. The TUI automatically detects these and styles them in a **dimmed, italicized** font to visually separate reasoning from the final answer.
 
 ---
 
-## Context Window Management
+## ⚠️ Development Notes
 
-Long conversations eventually exceed the model's context window. TurboQuant implements a sophisticated windowing system:
-
-### Smart KV Eviction
-Unlike standard circular buffers, TurboQuant's **KV Shift** strategy preserves the **System Prompt** (Position 0..X) while sliding the middle context window. This ensures the AI maintains its persona and instructions even during extremely long sessions.
-
-- **High Water Mark:** Windowing triggers when context is nearly full.
-- **Response Reserve:** 1024 tokens are always reserved for the assistant's next turn to prevent truncation.
-- **System Preservation:** System instructions are pinned and never evicted during KV shifts.
+*   **Static Linking**: The project forces static linkage of `ggml` and `llama` libraries to avoid `dyld` path issues common on macOS.
+*   **Threading**: Metal contexts are **not thread-safe**. The Rust wrapper enforces `!Send` and `!Sync` to prevent safety violations across thread boundaries.
+*   **Memory Reporting**: Run with `--verbose` to see exact buffer sizes allocated on the Metal GPU vs. System CPU.
 
 ---
 
-## Chat Template Auto-Detection
+## 📜 License
 
-The template engine reads GGUF metadata keys (`tokenizer.chat_template`, `general.architecture`) to automatically identify and apply the correct chat format:
-
-| Template | Detected From | Format |
-|----------|--------------|--------|
-| **ChatML** | `tokenizer.chat_template` contains `im_start`, or Qwen architecture | `<|im_start|>system…<|im_end|>` |
-| **Llama-3** | Architecture `llama` or template mentions `<|start_header_id|>` | `<|start_header_id|>user<|end_header_id|>…` |
-| **Mistral Instruct** | Architecture `mistral` or template mentions `[INST]` | `[INST] … [/INST]` |
-
-Override with `--template chatml|llama3|mistral` if auto-detection is wrong.
-
----
-
-## Inference Statistics
-
-After every one-shot run, TurboQuant prints a compact statistics block:
-
-```
-─── Inference Stats ───────────────────────────────
-  Latency:       1234.5 ms
-  Tokens:        128 prompt → 256 generated  (384 total)
-  Speed:         45.2 tok/s  (generation)
-────────────────────────────────────────────────────
-```
-
-### Metrics Reference
-
-| Metric | Where measured | Description |
-|---|---|---|
-| **TTFT** | C shim (`mach_absolute_time`) | Time from request start to end of first-token decode |
-| **Latency** | C shim | Total wall-clock time (prompt processing + generation) |
-| **Prompt TPS** | C shim | Prompt tokens processed per second |
-| **Generation TPS** | C shim | Output tokens generated per second |
-| **Token Usage** | C shim | Input prompt token count + output completion token count |
-| **Context Used** | KV cache query | Current KV cache occupancy (shown in TUI header) |
-
----
-
-## Threading Safety
-
-> **⚠️ TurboQuant + Metal contexts are NOT thread-safe.**
-
-- Contexts must remain on a **single OS thread**
-- Do **not** send contexts across threads or use in async executors without pinning
-- The Rust wrapper enforces `!Send` + `!Sync` via `PhantomData<*mut ()>`
-
----
-
-## License
-
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
+This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for details.
