@@ -22,6 +22,107 @@ This integration bridges the gap between low-level C++ performance and high-leve
 
 ---
 
+## 🔬 How It Works
+
+### High-Level Architecture
+
+```mermaid
+flowchart TD
+    subgraph User["User Interface"]
+        CLI["CLI Mode\n(one-shot prompt)"]
+        TUI["Interactive TUI\n(multi-turn chat)"]
+    end
+
+    subgraph Rust["Rust Application"]
+        MAIN["main.rs\nCLI parsing & mode dispatch"]
+        TUIMOD["tui.rs\nTerminal UI, event loop,\nreal-time token streaming"]
+        CHAT["chat.rs\nChatSession, message history,\nKV windowing strategies"]
+        TMPL["template.rs\nAuto-detect & format\nChatML / Llama3 / Mistral"]
+        CTX["context.rs\nTurboQuantCtx\n(safe Rust wrapper)"]
+        FFI["ffi.rs\nUnsafe extern C declarations"]
+    end
+
+    subgraph C["C Shim Layer"]
+        SHIM["llamatqshim.c\nGlue layer wrapping llama.cpp API\n(context, eval, KV ops, tokenize)"]
+    end
+
+    subgraph TQ["llama-cpp-turboquant (static libs)"]
+        LLAMA["libllama.a\nModel loading, decoding,\nsampling"]
+        GGML["libggml.a + libggml-base.a\nTensor operations"]
+        METAL["libggml-metal.a\nMetal GPU kernels incl.\nTurboQuant quantization"]
+        CPU["libggml-cpu.a + libggml-blas.a\nCPU fallback paths"]
+    end
+
+    subgraph HW["Apple Silicon Hardware"]
+        GPU["Metal GPU\n(quantized KV cache ops)"]
+        ACC["Accelerate Framework\n(CPU BLAS)"]
+    end
+
+    CLI --> MAIN
+    TUI --> MAIN
+    MAIN -->|"--chat"| TUIMOD
+    MAIN -->|"one-shot"| CTX
+    TUIMOD --> CHAT
+    CHAT --> TMPL
+    CHAT --> CTX
+    CTX --> FFI
+    FFI -->|"unsafe FFI"| SHIM
+    SHIM --> LLAMA
+    LLAMA --> GGML
+    GGML --> METAL
+    GGML --> CPU
+    METAL --> GPU
+    CPU --> ACC
+```
+
+### How TurboQuant Is Used
+
+**TurboQuant** is a specialized fork of `llama.cpp` that adds custom Metal GPU compute kernels for **KV cache quantization**. In standard llama.cpp, the Key and Value caches used during attention are stored in FP16, consuming significant GPU memory. TurboQuant introduces two new quantization types — `Turbo2` and `Turbo3` — that compress these caches at the hardware level using optimized Metal shaders.
+
+This project harnesses TurboQuant through a multi-layer integration:
+
+1. **Build time** (`build.rs`): CMake compiles the TurboQuant fork with `GGML_METAL=ON` and `GGML_USE_TURBOQUANT=1`, producing static libraries including the quantized Metal kernels.
+2. **FFI boundary** (`ffi.rs`): Defines `LlamaTqCacheType::Turbo3` (and `Turbo2`) as Rust enum variants that map directly to the fork's `ggml_type` enum values.
+3. **Context creation** (`context.rs` → `llamatqshim.c`): When `TurboQuantCtx::new()` is called, it passes the cache type through FFI to the C shim, which sets `ctx_params.type_k` and `ctx_params.type_v` to the TurboQuant type. This single assignment is what activates the quantized Metal kernels for all subsequent KV cache operations.
+4. **Runtime inference**: Every `llama_decode()` call during token generation now stores and retrieves KV entries using the quantized format on the GPU — no application-level code changes needed beyond the initial configuration.
+
+The result: **up to 6.4x KV cache compression** with Metal-accelerated quantization/dequantization, enabling longer context windows and larger models within the same memory budget.
+
+### TurboQuant Integration Close-Up
+
+```mermaid
+flowchart TD
+    subgraph Init["Context Initialization"]
+        A["main.rs\nTurboQuantCtx::new(\n  model, 99, Turbo3,\n  ctx_size, batch_size\n)"]
+        B["context.rs\nBuilds LlamaTqParams {\n  cache_type_k: Turbo3,\n  cache_type_v: Turbo3\n}"]
+        C["ffi.rs\nllamatq_create(&params)\n(unsafe extern C)"]
+        D["llamatqshim.c\nctx_params.type_k =\n  (ggml_type)params->cache_type_k\nctx_params.type_v =\n  (ggml_type)params->cache_type_v"]
+        E["llama_init_from_model()\nAllocates KV cache buffers\nin Turbo3 format on Metal GPU"]
+    end
+
+    subgraph Inference["Chat Inference Loop"]
+        F["chat.rs :: ChatSession::send()\nFormats turn via template.rs"]
+        G["context.rs :: chat_eval()\nCalls ffi::llamatq_chat_eval()"]
+        H["llamatqshim.c :: llamatq_chat_eval()\n1. Tokenize formatted turn\n2. llama_decode() → KV cache\n3. Sample loop with token_cb\n4. Return stats (TTFT, TPS)"]
+        I["Metal GPU\nAttention reads/writes KV\nusing Turbo3 quantized kernels"]
+    end
+
+    subgraph KV["KV Cache Management"]
+        J["chat.rs :: apply_windowing()\nTriggered when context fills"]
+        K["context.rs :: kv_shift()\n→ llamatqshim.c:\n  llama_memory_seq_rm(p0..p1)\n  llama_memory_seq_add(shift)"]
+        L["context.rs :: kv_clear()\n→ llamatqshim.c:\n  llama_kv_self_clear()\n(fallback: full reprocess)"]
+    end
+
+    A --> B --> C --> D --> E
+    F --> G --> H --> I
+    J -->|"primary: shift"| K
+    J -->|"fallback: reprocess"| L
+    H -.->|"KV cache ops use\nTurbo3 Metal kernels"| I
+    K -.->|"operates on quantized\nKV cache in-place"| I
+```
+
+---
+
 ## 🏗️ Open Source Foundations
 
 This project stands on the shoulders of giants:
